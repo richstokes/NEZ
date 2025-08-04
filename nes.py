@@ -44,6 +44,10 @@ class NES:
             print(f"Error loading ROM: {e}")
             return False
 
+    def load_rom(self, rom_path):
+        """Load a ROM file - alias for load_cartridge"""
+        return self.load_cartridge(rom_path)
+
     def reset(self):
         """Reset the NES"""
         self.cpu.reset()
@@ -64,8 +68,8 @@ class NES:
         return self.ppu.screen
 
     def step(self):
-        """Step one CPU cycle"""
-        # Handle NMI
+        """Execute one NES step (cycle-accurate)"""
+        # Handle pending NMI
         if self.nmi_pending:
             if self.nmi_delay > 0:
                 self.nmi_delay -= 1
@@ -73,12 +77,13 @@ class NES:
                 self.handle_nmi()
                 self.nmi_pending = False
 
-        # Step CPU
-        self.cpu.step()
-        self.cpu_cycles += 1
+        # Step CPU (it handles its own cycle counting and instruction execution)
+        cpu_cycles = self.cpu.step()
+        self.cpu.execute_instruction()  # Execute instruction if cycles are complete
+        self.cpu_cycles += cpu_cycles
 
         # Step PPU (3 PPU cycles per CPU cycle)
-        for _ in range(3):
+        for _ in range(cpu_cycles * 3):
             old_status = self.ppu.status
             self.ppu.step()
 
@@ -92,21 +97,23 @@ class NES:
 
     def handle_nmi(self):
         """Handle Non-Maskable Interrupt"""
-        # Push PC and status to stack
-        self.cpu.push_stack((self.cpu.PC >> 8) & 0xFF)
-        self.cpu.push_stack(self.cpu.PC & 0xFF)
-        self.cpu.push_stack(self.cpu.get_status_byte())
+        # Trigger NMI through the CPU's new interrupt system
+        if hasattr(self.cpu, "trigger_interrupt"):
+            self.cpu.trigger_interrupt("NMI")
+        else:
+            # Fallback for old CPU implementation
+            # Push PC and status to stack
+            self.cpu.push_stack((self.cpu.PC >> 8) & 0xFF)
+            self.cpu.push_stack(self.cpu.PC & 0xFF)
+            self.cpu.push_stack(self.cpu.get_status_byte())
 
-        # Set interrupt disable flag
-        self.cpu.I = 1
+            # Set interrupt disable flag
+            self.cpu.I = 1
 
-        # Jump to NMI vector
-        low = self.memory.read(0xFFFA)
-        high = self.memory.read(0xFFFB)
-        self.cpu.PC = (high << 8) | low
-
-        # Add cycles for NMI
-        self.cpu.cycles += 7
+            # Jump to NMI vector
+            low = self.memory.read(0xFFFA)
+            high = self.memory.read(0xFFFB)
+            self.cpu.PC = (high << 8) | low
 
     def set_controller_input(self, controller, buttons):
         """Set controller input

@@ -104,9 +104,9 @@ class Memory:
                 for i in range(256):
                     self.ppu.oam[i] = self.read(start_addr + i)
 
-            # DMA takes 513-514 CPU cycles (odd/even cycle dependent)
+            # DMA takes 513 CPU cycles + 1 if on odd cycle (hardware-accurate)
             if hasattr(self.cpu, "add_dma_cycles"):
-                self.cpu.add_dma_cycles(513 + (self.cpu.cycles & 1))
+                self.cpu.add_dma_cycles(513)
         elif addr == 0x4016:
             # Controller strobe
             if self.strobe == 1 and (value & 1) == 0:

@@ -1,6 +1,7 @@
 """
 NES 6502 CPU Emulator
 Implements the MOS Technology 6502 processor used in the NES
+Hardware-accurate cycle timing and behavior based on reference implementation
 """
 
 
@@ -24,8 +25,287 @@ class CPU:
         self.V = 0  # Overflow flag
         self.N = 0  # Negative flag
 
+        # Cycle tracking
         self.cycles = 0
         self.dma_cycles = 0  # Additional cycles from DMA operations
+        self.total_cycles = 0  # Total cycles executed
+        self.odd_cycle = 0  # Track odd/even cycles for DMA timing
+
+        # Interrupt handling
+        self.interrupt_pending = None  # NOI, NMI, IRQ, RSI
+        self.interrupt_state = (
+            0  # 0 = normal, 1 = branch pending, 2 = interrupt pending
+        )
+
+        # Current instruction state
+        self.current_instruction = None
+        self.current_address = 0
+        self.current_addressing_mode = None
+
+        # Branch state tracking
+        self.branch_pending = False
+        self.branch_target = 0
+
+        # Cycle lookup table for hardware-accurate timing
+        self.cycle_lookup = [
+            # 0  1  2  3  4  5  6  7  8  9  A  B  C  D  E  F
+            7,
+            6,
+            0,
+            8,
+            3,
+            3,
+            5,
+            5,
+            3,
+            2,
+            2,
+            2,
+            4,
+            4,
+            6,
+            6,  # 0
+            2,
+            5,
+            0,
+            8,
+            4,
+            4,
+            6,
+            6,
+            2,
+            4,
+            2,
+            7,
+            4,
+            4,
+            7,
+            7,  # 1
+            6,
+            6,
+            0,
+            8,
+            3,
+            3,
+            5,
+            5,
+            4,
+            2,
+            2,
+            2,
+            4,
+            4,
+            6,
+            6,  # 2
+            2,
+            5,
+            0,
+            8,
+            4,
+            4,
+            6,
+            6,
+            2,
+            4,
+            2,
+            7,
+            4,
+            4,
+            7,
+            7,  # 3
+            6,
+            6,
+            0,
+            8,
+            3,
+            3,
+            5,
+            5,
+            3,
+            2,
+            2,
+            2,
+            3,
+            4,
+            6,
+            6,  # 4
+            2,
+            5,
+            0,
+            8,
+            4,
+            4,
+            6,
+            6,
+            2,
+            4,
+            2,
+            7,
+            4,
+            4,
+            7,
+            7,  # 5
+            6,
+            6,
+            0,
+            8,
+            3,
+            3,
+            5,
+            5,
+            4,
+            2,
+            2,
+            2,
+            5,
+            4,
+            6,
+            6,  # 6
+            2,
+            5,
+            0,
+            8,
+            4,
+            4,
+            6,
+            6,
+            2,
+            4,
+            2,
+            7,
+            4,
+            4,
+            7,
+            7,  # 7
+            2,
+            6,
+            2,
+            6,
+            3,
+            3,
+            3,
+            3,
+            2,
+            2,
+            2,
+            2,
+            4,
+            4,
+            4,
+            4,  # 8
+            2,
+            6,
+            0,
+            6,
+            4,
+            4,
+            4,
+            4,
+            2,
+            5,
+            2,
+            5,
+            5,
+            5,
+            5,
+            5,  # 9
+            2,
+            6,
+            2,
+            6,
+            3,
+            3,
+            3,
+            3,
+            2,
+            2,
+            2,
+            2,
+            4,
+            4,
+            4,
+            4,  # A
+            2,
+            5,
+            0,
+            5,
+            4,
+            4,
+            4,
+            4,
+            2,
+            4,
+            2,
+            4,
+            4,
+            4,
+            4,
+            4,  # B
+            2,
+            6,
+            2,
+            8,
+            3,
+            3,
+            5,
+            5,
+            2,
+            2,
+            2,
+            2,
+            4,
+            4,
+            6,
+            6,  # C
+            2,
+            5,
+            0,
+            8,
+            4,
+            4,
+            6,
+            6,
+            2,
+            4,
+            2,
+            7,
+            4,
+            4,
+            7,
+            7,  # D
+            2,
+            6,
+            2,
+            8,
+            3,
+            3,
+            5,
+            5,
+            2,
+            2,
+            2,
+            2,
+            4,
+            4,
+            6,
+            6,  # E
+            2,
+            5,
+            0,
+            8,
+            4,
+            4,
+            6,
+            6,
+            2,
+            4,
+            2,
+            7,
+            4,
+            4,
+            7,
+            7,  # F
+        ]
 
         # Instruction set
         self.instructions = {
@@ -304,6 +584,311 @@ class CPU:
         self.PC = (high << 8) | low
 
         self.cycles = 0
+        self.total_cycles = 0
+        self.odd_cycle = 0
+        self.interrupt_pending = None
+        self.interrupt_state = 0
+        self.branch_pending = False
+
+    def step(self):
+        """Execute one CPU cycle with hardware-accurate timing"""
+        # Track odd/even cycles for accurate DMA timing
+        self.odd_cycle = 1 - self.odd_cycle
+        self.total_cycles += 1
+
+        # Handle DMA cycles first (CPU is halted during DMA)
+        if self.dma_cycles > 0:
+            self.dma_cycles -= 1
+            return 1
+
+        # If we're in the middle of an instruction, just count down cycles
+        if self.cycles > 0:
+            self.cycles -= 1
+            return 1
+
+        # Handle pending interrupts at the start of a new instruction
+        if self.interrupt_pending and self.interrupt_state == 0:
+            if self.interrupt_pending == "NMI" or (
+                self.interrupt_pending == "IRQ" and self.I == 0
+            ):
+                self.interrupt_state = 2  # Mark interrupt pending
+                self.cycles = 6  # Interrupt handling takes 7 cycles (this is cycle 1)
+                return 1
+
+        # If interrupt is pending and we've counted down, handle it
+        if self.interrupt_state == 2 and self.cycles == 0:
+            self._handle_interrupt()
+            self.interrupt_state = 0
+            return 1
+
+        # Handle branch execution
+        if self.branch_pending:
+            self.PC = self.branch_target
+            self.branch_pending = False
+            return 1
+
+        # Fetch and decode new instruction
+        opcode = self.memory.read(self.PC)
+        self.PC = (self.PC + 1) & 0xFFFF
+
+        # Get cycle count from lookup table for hardware accuracy
+        self.cycles = (
+            self.cycle_lookup[opcode] - 1
+        )  # -1 because we already used one cycle
+
+        if opcode not in self.instructions:
+            print(f"Unknown opcode: 0x{opcode:02X} at PC: 0x{self.PC-1:04X}")
+            return
+
+        instruction, addressing_mode, length, _ = self.instructions[opcode]
+        self.current_instruction = instruction
+        self.current_addressing_mode = addressing_mode
+
+        # Get operand and calculate address based on addressing mode
+        self.current_address = self._get_address_with_cycles(
+            addressing_mode, length - 1
+        )
+
+        # Prepare for branch instructions (they need special handling)
+        if instruction in ["BPL", "BMI", "BVC", "BVS", "BCC", "BCS", "BNE", "BEQ"]:
+            self._prepare_branch(instruction)
+
+        return 1
+
+    def execute_instruction(self):
+        """Execute the current instruction when cycles are complete"""
+        if self.current_instruction and self.cycles == 0:
+            # Execute instruction
+            getattr(self, f"execute_{self.current_instruction.lower()}")(
+                self.current_address, self.current_addressing_mode
+            )
+            self.current_instruction = None
+
+    def _handle_interrupt(self):
+        """Handle pending interrupt"""
+        if self.interrupt_pending == "NMI":
+            vector_addr = 0xFFFA
+        elif self.interrupt_pending == "IRQ":
+            vector_addr = 0xFFFE
+        elif self.interrupt_pending == "RST":
+            vector_addr = 0xFFFC
+        else:
+            return
+
+        # Push PC and status register to stack
+        self.push_stack((self.PC >> 8) & 0xFF)
+        self.push_stack(self.PC & 0xFF)
+        status = self.get_status_byte()
+        if self.interrupt_pending == "IRQ":
+            status |= 0x10  # Set B flag for IRQ
+        self.push_stack(status)
+
+        # Set interrupt disable flag
+        self.I = 1
+
+        # Jump to interrupt vector
+        low = self.memory.read(vector_addr)
+        high = self.memory.read(vector_addr + 1)
+        self.PC = (high << 8) | low
+
+        self.interrupt_pending = None
+
+    def _prepare_branch(self, instruction):
+        """Prepare branch instruction execution"""
+        # Get the condition for the branch
+        conditions = {
+            "BPL": self.N == 0,
+            "BMI": self.N == 1,
+            "BVC": self.V == 0,
+            "BVS": self.V == 1,
+            "BCC": self.C == 0,
+            "BCS": self.C == 1,
+            "BNE": self.Z == 0,
+            "BEQ": self.Z == 1,
+        }
+
+        if conditions.get(instruction, False):
+            # Branch will be taken
+            old_pc = self.PC
+            self.branch_target = self.current_address
+            self.branch_pending = True
+
+            # Add extra cycle for branch taken
+            self.cycles += 1
+
+            # Add extra cycle if page boundary crossed
+            if self._page_crossed(old_pc, self.branch_target):
+                self.cycles += 1
+
+    def _page_crossed(self, addr1, addr2):
+        """Check if two addresses are on different pages"""
+        return (addr1 & 0xFF00) != (addr2 & 0xFF00)
+
+    def _get_address_with_cycles(self, addressing_mode, operand_length):
+        """Get operand address with cycle-accurate page boundary handling"""
+        if addressing_mode == "implied" or addressing_mode == "accumulator":
+            # Dummy read for implied instructions
+            self.memory.read(self.PC)
+            return None
+        elif addressing_mode == "immediate":
+            addr = self.PC
+            self.PC = (self.PC + 1) & 0xFFFF
+            return addr
+        elif addressing_mode == "zero_page":
+            addr = self.memory.read(self.PC)
+            self.PC = (self.PC + 1) & 0xFFFF
+            return addr
+        elif addressing_mode == "zero_page_x":
+            addr = (self.memory.read(self.PC) + self.X) & 0xFF
+            self.PC = (self.PC + 1) & 0xFFFF
+            return addr
+        elif addressing_mode == "zero_page_y":
+            addr = (self.memory.read(self.PC) + self.Y) & 0xFF
+            self.PC = (self.PC + 1) & 0xFFFF
+            return addr
+        elif addressing_mode == "absolute":
+            low = self.memory.read(self.PC)
+            high = self.memory.read(self.PC + 1)
+            self.PC = (self.PC + 2) & 0xFFFF
+            return (high << 8) | low
+        elif addressing_mode == "absolute_x":
+            low = self.memory.read(self.PC)
+            high = self.memory.read(self.PC + 1)
+            self.PC = (self.PC + 2) & 0xFFFF
+            base_addr = (high << 8) | low
+            final_addr = (base_addr + self.X) & 0xFFFF
+
+            # Check if page boundary crossed for read instructions
+            if self.current_instruction in [
+                "LDA",
+                "LDX",
+                "LDY",
+                "EOR",
+                "AND",
+                "ORA",
+                "ADC",
+                "SBC",
+                "CMP",
+            ]:
+                if self._page_crossed(base_addr, final_addr):
+                    # Perform dummy read at wrong address
+                    self.memory.read(
+                        (base_addr & 0xFF00) | ((base_addr + self.X) & 0xFF)
+                    )
+                    self.cycles += 1
+            elif self.current_instruction in [
+                "STA",
+                "STX",
+                "STY",
+                "ASL",
+                "LSR",
+                "ROL",
+                "ROR",
+                "INC",
+                "DEC",
+            ]:
+                # Write instructions always do dummy read
+                self.memory.read((base_addr & 0xFF00) | ((base_addr + self.X) & 0xFF))
+
+            return final_addr
+        elif addressing_mode == "absolute_y":
+            low = self.memory.read(self.PC)
+            high = self.memory.read(self.PC + 1)
+            self.PC = (self.PC + 2) & 0xFFFF
+            base_addr = (high << 8) | low
+            final_addr = (base_addr + self.Y) & 0xFFFF
+
+            # Check if page boundary crossed for read instructions
+            if self.current_instruction in [
+                "LDA",
+                "LDX",
+                "LDY",
+                "EOR",
+                "AND",
+                "ORA",
+                "ADC",
+                "SBC",
+                "CMP",
+            ]:
+                if self._page_crossed(base_addr, final_addr):
+                    # Perform dummy read at wrong address
+                    self.memory.read(
+                        (base_addr & 0xFF00) | ((base_addr + self.Y) & 0xFF)
+                    )
+                    self.cycles += 1
+            elif self.current_instruction in ["STA", "STX", "STY"]:
+                # Write instructions always do dummy read
+                self.memory.read((base_addr & 0xFF00) | ((base_addr + self.Y) & 0xFF))
+
+            return final_addr
+        elif addressing_mode == "relative":
+            offset = self.memory.read(self.PC)
+            self.PC = (self.PC + 1) & 0xFFFF
+            if offset & 0x80:  # Negative
+                offset = offset - 256
+            return (self.PC + offset) & 0xFFFF
+        elif addressing_mode == "indirect":
+            low = self.memory.read(self.PC)
+            high = self.memory.read(self.PC + 1)
+            self.PC = (self.PC + 2) & 0xFFFF
+            addr = (high << 8) | low
+            # 6502 bug: if low byte is 0xFF, high byte wraps around within same page
+            if low == 0xFF:
+                target_low = self.memory.read(addr)
+                target_high = self.memory.read(addr & 0xFF00)
+            else:
+                target_low = self.memory.read(addr)
+                target_high = self.memory.read(addr + 1)
+            return (target_high << 8) | target_low
+        elif addressing_mode == "indexed_indirect":
+            base = self.memory.read(self.PC)
+            self.PC = (self.PC + 1) & 0xFFFF
+            addr = (base + self.X) & 0xFF
+            low = self.memory.read(addr)
+            high = self.memory.read((addr + 1) & 0xFF)
+            return (high << 8) | low
+        elif addressing_mode == "indirect_indexed":
+            base = self.memory.read(self.PC)
+            self.PC = (self.PC + 1) & 0xFFFF
+            low = self.memory.read(base)
+            high = self.memory.read((base + 1) & 0xFF)
+            base_addr = (high << 8) | low
+            final_addr = (base_addr + self.Y) & 0xFFFF
+
+            # Check if page boundary crossed for read instructions
+            if self.current_instruction in [
+                "LDA",
+                "LDX",
+                "LDY",
+                "EOR",
+                "AND",
+                "ORA",
+                "ADC",
+                "SBC",
+                "CMP",
+            ]:
+                if self._page_crossed(base_addr, final_addr):
+                    # Perform dummy read at wrong address
+                    self.memory.read(
+                        (base_addr & 0xFF00) | ((base_addr + self.Y) & 0xFF)
+                    )
+                    self.cycles += 1
+            elif self.current_instruction in ["STA", "STX", "STY"]:
+                # Write instructions always do dummy read
+                self.memory.read((base_addr & 0xFF00) | ((base_addr + self.Y) & 0xFF))
+
+            return final_addr
+
+    def trigger_interrupt(self, interrupt_type):
+        """Trigger an interrupt (NMI, IRQ, RST)"""
+        self.interrupt_pending = interrupt_type
+
+    def add_dma_cycles(self, cycles):
+        """Add DMA cycles that will delay CPU execution"""
+        self.dma_cycles += cycles
+        # DMA takes extra cycle on odd CPU cycles
+        if self.odd_cycle:
+            self.dma_cycles += 1
 
     def get_status_byte(self):
         """Get the status register as a byte"""
@@ -343,39 +928,8 @@ class CPU:
         self.S = (self.S + 1) & 0xFF
         return self.memory.read(0x0100 + self.S)
 
-    def step(self):
-        """Execute one instruction"""
-        # Handle DMA cycles first
-        if self.dma_cycles > 0:
-            self.dma_cycles -= 1
-            return
-
-        if self.cycles > 0:
-            self.cycles -= 1
-            return
-
-        opcode = self.memory.read(self.PC)
-        self.PC = (self.PC + 1) & 0xFFFF
-
-        if opcode not in self.instructions:
-            print(f"Unknown opcode: 0x{opcode:02X}")
-            return
-
-        instruction, addressing_mode, length, cycles = self.instructions[opcode]
-        self.cycles = cycles - 1  # -1 because we already used one cycle
-
-        # Get operand based on addressing mode
-        operand = self.get_operand(addressing_mode, length - 1)
-
-        # Execute instruction
-        getattr(self, f"execute_{instruction.lower()}")(operand, addressing_mode)
-
-    def add_dma_cycles(self, cycles):
-        """Add DMA cycles that will delay CPU execution"""
-        self.dma_cycles += cycles
-
     def get_operand(self, addressing_mode, operand_length):
-        """Get operand based on addressing mode"""
+        """Legacy operand getter for compatibility"""
         if addressing_mode == "implied" or addressing_mode == "accumulator":
             return None
         elif addressing_mode == "immediate":
@@ -444,10 +998,10 @@ class CPU:
             target = ((high << 8) | low) + self.Y
             return target & 0xFFFF
 
-    # Instruction implementations
+    # Instruction implementations - Updated for hardware accuracy
     def execute_lda(self, operand, addressing_mode):
         if addressing_mode == "immediate":
-            self.A = operand
+            self.A = self.memory.read(operand)
         else:
             self.A = self.memory.read(operand)
         self.set_zero_negative(self.A)
@@ -506,11 +1060,13 @@ class CPU:
         self.set_zero_negative(self.A)
 
     def execute_php(self, operand, addressing_mode):
-        self.push_stack(self.get_status_byte() | 0x10)  # B flag set
+        # Hardware-accurate: B and bit 5 are always set when pushed by PHP
+        self.push_stack(self.get_status_byte() | 0x30)
 
     def execute_plp(self, operand, addressing_mode):
-        self.set_status_byte(self.pop_stack())
-        self.B = 0  # B flag always 0
+        # Hardware-accurate: ignore bits 4 and 5 from stack
+        status = self.pop_stack()
+        self.set_status_byte((status & ~0x30) | (self.get_status_byte() & 0x30))
 
     def execute_adc(self, operand, addressing_mode):
         if addressing_mode == "immediate":
@@ -580,6 +1136,8 @@ class CPU:
             self.set_zero_negative(self.A)
         else:
             value = self.memory.read(operand)
+            # Hardware-accurate: dummy write the original value
+            self.memory.write(operand, value)
             self.C = 1 if value & 0x80 else 0
             value = (value << 1) & 0xFF
             self.memory.write(operand, value)
@@ -592,6 +1150,8 @@ class CPU:
             self.set_zero_negative(self.A)
         else:
             value = self.memory.read(operand)
+            # Hardware-accurate: dummy write the original value
+            self.memory.write(operand, value)
             self.C = value & 1
             value = value >> 1
             self.memory.write(operand, value)
@@ -605,6 +1165,8 @@ class CPU:
             self.set_zero_negative(self.A)
         else:
             value = self.memory.read(operand)
+            # Hardware-accurate: dummy write the original value
+            self.memory.write(operand, value)
             old_carry = self.C
             self.C = 1 if value & 0x80 else 0
             value = ((value << 1) | old_carry) & 0xFF
@@ -619,6 +1181,8 @@ class CPU:
             self.set_zero_negative(self.A)
         else:
             value = self.memory.read(operand)
+            # Hardware-accurate: dummy write the original value
+            self.memory.write(operand, value)
             old_carry = self.C
             self.C = value & 1
             value = (value >> 1) | (old_carry << 7)
@@ -669,7 +1233,10 @@ class CPU:
         self.N = 1 if value & 0x80 else 0
 
     def execute_inc(self, operand, addressing_mode):
-        value = (self.memory.read(operand) + 1) & 0xFF
+        value = self.memory.read(operand)
+        # Hardware-accurate: dummy write the original value
+        self.memory.write(operand, value)
+        value = (value + 1) & 0xFF
         self.memory.write(operand, value)
         self.set_zero_negative(value)
 
@@ -682,7 +1249,10 @@ class CPU:
         self.set_zero_negative(self.Y)
 
     def execute_dec(self, operand, addressing_mode):
-        value = (self.memory.read(operand) - 1) & 0xFF
+        value = self.memory.read(operand)
+        # Hardware-accurate: dummy write the original value
+        self.memory.write(operand, value)
+        value = (value - 1) & 0xFF
         self.memory.write(operand, value)
         self.set_zero_negative(value)
 
@@ -741,17 +1311,21 @@ class CPU:
         self.PC = (((high << 8) | low) + 1) & 0xFFFF
 
     def execute_brk(self, operand, addressing_mode):
+        # BRK is a 2-byte instruction
         self.PC = (self.PC + 1) & 0xFFFF
         self.push_stack((self.PC >> 8) & 0xFF)
         self.push_stack(self.PC & 0xFF)
-        self.push_stack(self.get_status_byte() | 0x10)
+        # Hardware-accurate: B and bit 5 are always set when pushed by BRK
+        self.push_stack(self.get_status_byte() | 0x30)
         self.I = 1
         low = self.memory.read(0xFFFE)
         high = self.memory.read(0xFFFF)
         self.PC = (high << 8) | low
 
     def execute_rti(self, operand, addressing_mode):
-        self.set_status_byte(self.pop_stack())
+        # Hardware-accurate: ignore bits 4 and 5 from stack
+        status = self.pop_stack()
+        self.set_status_byte((status & ~0x30) | (self.get_status_byte() & 0x30))
         low = self.pop_stack()
         high = self.pop_stack()
         self.PC = (high << 8) | low
@@ -806,7 +1380,10 @@ class CPU:
 
     def execute_dcp(self, operand, addressing_mode):
         """Decrement and Compare - Decrement memory then compare with A"""
-        value = (self.memory.read(operand) - 1) & 0xFF
+        value = self.memory.read(operand)
+        # Hardware-accurate: dummy write the original value
+        self.memory.write(operand, value)
+        value = (value - 1) & 0xFF
         self.memory.write(operand, value)
 
         # Compare with A
@@ -816,7 +1393,10 @@ class CPU:
 
     def execute_isc(self, operand, addressing_mode):
         """Increment and Subtract with Carry - Increment memory then SBC"""
-        value = (self.memory.read(operand) + 1) & 0xFF
+        value = self.memory.read(operand)
+        # Hardware-accurate: dummy write the original value
+        self.memory.write(operand, value)
+        value = (value + 1) & 0xFF
         self.memory.write(operand, value)
 
         # Subtract with carry
@@ -834,6 +1414,8 @@ class CPU:
     def execute_slo(self, operand, addressing_mode):
         """Shift Left and OR - ASL memory then OR with A"""
         value = self.memory.read(operand)
+        # Hardware-accurate: dummy write the original value
+        self.memory.write(operand, value)
 
         # ASL
         self.C = 1 if value & 0x80 else 0
@@ -847,6 +1429,8 @@ class CPU:
     def execute_rla(self, operand, addressing_mode):
         """Rotate Left and AND - ROL memory then AND with A"""
         value = self.memory.read(operand)
+        # Hardware-accurate: dummy write the original value
+        self.memory.write(operand, value)
 
         # ROL
         old_carry = self.C
@@ -861,6 +1445,8 @@ class CPU:
     def execute_sre(self, operand, addressing_mode):
         """Shift Right and EOR - LSR memory then EOR with A"""
         value = self.memory.read(operand)
+        # Hardware-accurate: dummy write the original value
+        self.memory.write(operand, value)
 
         # LSR
         self.C = value & 1
@@ -874,6 +1460,8 @@ class CPU:
     def execute_rra(self, operand, addressing_mode):
         """Rotate Right and Add with Carry - ROR memory then ADC"""
         value = self.memory.read(operand)
+        # Hardware-accurate: dummy write the original value
+        self.memory.write(operand, value)
 
         # ROR
         old_carry = self.C

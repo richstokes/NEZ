@@ -342,8 +342,7 @@ class PPU:
         elif 241 <= self.scanline <= 260:
             if self.scanline == 241 and self.cycle == 1:
                 self.status |= self.V_BLANK  # Set VBlank flag
-                if self.ctrl & self.GENERATE_NMI:  # NMI enabled
-                    self.memory.cpu.nmi = True
+                # NMI handling is done by the NES class watching for status changes
 
         # Pre-render scanline (261)
         else:
