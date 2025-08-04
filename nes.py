@@ -79,7 +79,6 @@ class NES:
 
         # Step CPU (it handles its own cycle counting and instruction execution)
         cpu_cycles = self.cpu.step()
-        self.cpu.execute_instruction()  # Execute instruction if cycles are complete
         self.cpu_cycles += cpu_cycles
 
         # Step PPU (3 PPU cycles per CPU cycle)

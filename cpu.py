@@ -37,11 +37,6 @@ class CPU:
             0  # 0 = normal, 1 = branch pending, 2 = interrupt pending
         )
 
-        # Current instruction state
-        self.current_instruction = None
-        self.current_address = 0
-        self.current_addressing_mode = None
-
         # Branch state tracking
         self.branch_pending = False
         self.branch_target = 0
@@ -638,31 +633,26 @@ class CPU:
 
         if opcode not in self.instructions:
             print(f"Unknown opcode: 0x{opcode:02X} at PC: 0x{self.PC-1:04X}")
-            return
+            return 1
 
         instruction, addressing_mode, length, _ = self.instructions[opcode]
-        self.current_instruction = instruction
-        self.current_addressing_mode = addressing_mode
 
         # Get operand and calculate address based on addressing mode
-        self.current_address = self._get_address_with_cycles(
-            addressing_mode, length - 1
-        )
+        address = self._get_address_with_cycles(addressing_mode, length - 1, instruction)
+
+        # Execute the instruction immediately (integrated execution model)
+        getattr(self, f"execute_{instruction.lower()}")(address, addressing_mode)
 
         # Prepare for branch instructions (they need special handling)
         if instruction in ["BPL", "BMI", "BVC", "BVS", "BCC", "BCS", "BNE", "BEQ"]:
-            self._prepare_branch(instruction)
+            self._prepare_branch(instruction, address)
 
         return 1
 
     def execute_instruction(self):
-        """Execute the current instruction when cycles are complete"""
-        if self.current_instruction and self.cycles == 0:
-            # Execute instruction
-            getattr(self, f"execute_{self.current_instruction.lower()}")(
-                self.current_address, self.current_addressing_mode
-            )
-            self.current_instruction = None
+        """Legacy method - no longer used with integrated execution model"""
+        # This method is kept for compatibility but is no longer called
+        pass
 
     def _handle_interrupt(self):
         """Handle pending interrupt"""
@@ -693,7 +683,7 @@ class CPU:
 
         self.interrupt_pending = None
 
-    def _prepare_branch(self, instruction):
+    def _prepare_branch(self, instruction, address):
         """Prepare branch instruction execution"""
         # Get the condition for the branch
         conditions = {
@@ -710,21 +700,21 @@ class CPU:
         if conditions.get(instruction, False):
             # Branch will be taken
             old_pc = self.PC
-            self.branch_target = self.current_address
+            self.branch_target = address
             self.branch_pending = True
 
             # Add extra cycle for branch taken
             self.cycles += 1
 
             # Add extra cycle if page boundary crossed
-            if self._page_crossed(old_pc, self.branch_target):
+            if self._page_crossed(old_pc, address):
                 self.cycles += 1
 
     def _page_crossed(self, addr1, addr2):
         """Check if two addresses are on different pages"""
         return (addr1 & 0xFF00) != (addr2 & 0xFF00)
 
-    def _get_address_with_cycles(self, addressing_mode, operand_length):
+    def _get_address_with_cycles(self, addressing_mode, operand_length, instruction):
         """Get operand address with cycle-accurate page boundary handling"""
         if addressing_mode == "implied" or addressing_mode == "accumulator":
             # Dummy read for implied instructions
@@ -759,7 +749,7 @@ class CPU:
             final_addr = (base_addr + self.X) & 0xFFFF
 
             # Check if page boundary crossed for read instructions
-            if self.current_instruction in [
+            if instruction in [
                 "LDA",
                 "LDX",
                 "LDY",
@@ -776,7 +766,7 @@ class CPU:
                         (base_addr & 0xFF00) | ((base_addr + self.X) & 0xFF)
                     )
                     self.cycles += 1
-            elif self.current_instruction in [
+            elif instruction in [
                 "STA",
                 "STX",
                 "STY",
@@ -799,7 +789,7 @@ class CPU:
             final_addr = (base_addr + self.Y) & 0xFFFF
 
             # Check if page boundary crossed for read instructions
-            if self.current_instruction in [
+            if instruction in [
                 "LDA",
                 "LDX",
                 "LDY",
@@ -816,7 +806,7 @@ class CPU:
                         (base_addr & 0xFF00) | ((base_addr + self.Y) & 0xFF)
                     )
                     self.cycles += 1
-            elif self.current_instruction in ["STA", "STX", "STY"]:
+            elif instruction in ["STA", "STX", "STY"]:
                 # Write instructions always do dummy read
                 self.memory.read((base_addr & 0xFF00) | ((base_addr + self.Y) & 0xFF))
 
@@ -856,7 +846,7 @@ class CPU:
             final_addr = (base_addr + self.Y) & 0xFFFF
 
             # Check if page boundary crossed for read instructions
-            if self.current_instruction in [
+            if instruction in [
                 "LDA",
                 "LDX",
                 "LDY",
@@ -873,7 +863,7 @@ class CPU:
                         (base_addr & 0xFF00) | ((base_addr + self.Y) & 0xFF)
                     )
                     self.cycles += 1
-            elif self.current_instruction in ["STA", "STX", "STY"]:
+            elif instruction in ["STA", "STX", "STY"]:
                 # Write instructions always do dummy read
                 self.memory.read((base_addr & 0xFF00) | ((base_addr + self.Y) & 0xFF))
 
