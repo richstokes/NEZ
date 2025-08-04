@@ -25,6 +25,8 @@ class NEZEmulator:
         self.window = None
         self.renderer = None
         self.texture = None
+        self.audio_stream = None
+        self.audio_device = None
 
         # Controller state
         self.controller_state = {
@@ -45,7 +47,12 @@ class NEZEmulator:
 
     def initialize_sdl(self):
         """Initialize SDL2"""
-        if sdl2.SDL_Init(sdl2.SDL_INIT_VIDEO | sdl2.SDL_INIT_EVENTS) != 0:
+        if (
+            sdl2.SDL_Init(
+                sdl2.SDL_INIT_VIDEO | sdl2.SDL_INIT_AUDIO | sdl2.SDL_INIT_EVENTS
+            )
+            != 0
+        ):
             print(f"SDL2 initialization failed: {sdl2.SDL_GetError()}")
             return False
 
@@ -87,11 +94,28 @@ class NEZEmulator:
             print(f"Texture creation failed: {sdl2.SDL_GetError()}")
             return False
 
+        # Create audio device for sound output (SDL2 style)
+        desired = sdl2.SDL_AudioSpec(48000, sdl2.AUDIO_S16, 1, 1024)
+
+        obtained = sdl2.SDL_AudioSpec(0, 0, 0, 0)
+        self.audio_device = sdl2.SDL_OpenAudioDevice(
+            None, 0, desired, obtained, 0
+        )
+
+        if self.audio_device == 0:
+            print(f"Audio device creation failed: {sdl2.SDL_GetError()}")
+            return False
+
+        # For compatibility, we'll create a simple audio stream simulation
+        self.audio_stream = self.audio_device
+
         print("SDL2 initialized successfully")
         return True
 
     def cleanup_sdl(self):
         """Clean up SDL2 resources"""
+        if hasattr(self, 'audio_device') and self.audio_device:
+            sdl2.SDL_CloseAudioDevice(self.audio_device)
         if self.texture:
             sdl2.SDL_DestroyTexture(self.texture)
         if self.renderer:
@@ -209,8 +233,15 @@ class NEZEmulator:
             self.cleanup_sdl()
             return False
 
+        # Initialize APU with audio stream
+        self.nes.apu.init_audio_stream(self.audio_stream)
+
         self.nes.reset()
         self.running = True
+
+        # Start audio playback
+        if hasattr(self, 'audio_device') and self.audio_device:
+            sdl2.SDL_PauseAudioDevice(self.audio_device, 0)
 
         print("Starting emulator...")
         print("Controls:")

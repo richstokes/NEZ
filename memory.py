@@ -11,6 +11,7 @@ class Memory:
         self.cartridge = None  # Cartridge reference
         self.ppu = None  # PPU reference
         self.cpu = None  # CPU reference (for NMI)
+        self.apu = None  # APU reference
 
         # Open bus value - important for accurate memory behavior
         self.bus = 0
@@ -34,6 +35,10 @@ class Memory:
         """Set the CPU reference"""
         self.cpu = cpu
 
+    def set_apu(self, apu):
+        """Set the APU reference"""
+        self.apu = apu
+
     def read(self, addr):
         """Read from CPU memory"""
         addr = addr & 0xFFFF
@@ -46,6 +51,12 @@ class Memory:
             # PPU registers (mirrored every 8 bytes)
             ppu_addr = 0x2000 + (addr & 7)
             self.bus = self.ppu.read_register(ppu_addr)
+            return self.bus
+        elif addr == 0x4015:
+            # APU Status register
+            if self.apu:
+                self.bus = self.apu.read_status()
+                return self.bus
             return self.bus
         elif addr == 0x4016:
             # Controller 1
@@ -116,8 +127,12 @@ class Memory:
             self.strobe = value & 1
             # Update bus with mixed old/new values as per hardware
             self.bus = (old_bus & 0xF0) | (value & 0xF)
+        elif addr >= 0x4000 and addr <= 0x4017:
+            # APU registers
+            if self.apu:
+                self.apu.write_register(addr, value)
         elif addr < 0x4020:
-            # APU and I/O registers - not implemented but preserve bus
+            # Other I/O registers - not implemented but preserve bus
             pass
         else:
             # Cartridge space

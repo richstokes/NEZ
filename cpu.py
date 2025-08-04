@@ -638,7 +638,9 @@ class CPU:
         instruction, addressing_mode, length, _ = self.instructions[opcode]
 
         # Get operand and calculate address based on addressing mode
-        address = self._get_address_with_cycles(addressing_mode, length - 1, instruction)
+        address = self._get_address_with_cycles(
+            addressing_mode, length - 1, instruction
+        )
 
         # Execute the instruction immediately (integrated execution model)
         getattr(self, f"execute_{instruction.lower()}")(address, addressing_mode)

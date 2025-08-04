@@ -1,10 +1,11 @@
 """
 Main NES Emulator Class
-Coordinates CPU, PPU, and Memory components
+Coordinates CPU, PPU, APU, and Memory components
 """
 
 from cpu import CPU
 from ppu import PPU
+from apu import APU
 from memory import Memory, Cartridge
 
 
@@ -14,10 +15,12 @@ class NES:
         self.memory = Memory()
         self.ppu = PPU(self.memory)
         self.cpu = CPU(self.memory)
+        self.apu = APU(self)
 
         # Connect components
         self.memory.set_ppu(self.ppu)
         self.memory.set_cpu(self.cpu)
+        self.memory.set_apu(self.apu)
         self.ppu.memory = self.memory
 
         # Timing
@@ -52,6 +55,7 @@ class NES:
         """Reset the NES"""
         self.cpu.reset()
         self.ppu.reset()
+        self.apu.reset()
         self.cpu_cycles = 0
         self.ppu_cycles = 0
         self.nmi_pending = False
@@ -93,6 +97,10 @@ class NES:
                     self.nmi_delay = 2  # 2 cycle delay
 
             self.ppu_cycles += 1
+
+        # Step APU (1 APU cycle per CPU cycle)
+        for _ in range(cpu_cycles):
+            self.apu.step()
 
     def handle_nmi(self):
         """Handle Non-Maskable Interrupt"""
