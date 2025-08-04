@@ -1,4 +1,4 @@
-DEBUG_MODE = True
+DEBUG_MODE = False
 
 
 def debug_print(text):

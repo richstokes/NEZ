@@ -99,6 +99,9 @@ class NES:
         """Step one complete frame - reference implementation style"""
         # Reset the render flag
         self.ppu.render = False
+        print(
+            f"DEBUG: step_frame starting - render flag reset, PPU at scanline={self.ppu.scanline}, cycle={self.ppu.cycle}, frame={self.ppu.frame}"
+        )
 
         # Debug info, disable in utils.py if not needed
         debug_print(
