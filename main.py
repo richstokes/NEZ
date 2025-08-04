@@ -98,9 +98,7 @@ class NEZEmulator:
         desired = sdl2.SDL_AudioSpec(48000, sdl2.AUDIO_S16, 1, 1024)
 
         obtained = sdl2.SDL_AudioSpec(0, 0, 0, 0)
-        self.audio_device = sdl2.SDL_OpenAudioDevice(
-            None, 0, desired, obtained, 0
-        )
+        self.audio_device = sdl2.SDL_OpenAudioDevice(None, 0, desired, obtained, 0)
 
         if self.audio_device == 0:
             print(f"Audio device creation failed: {sdl2.SDL_GetError()}")
@@ -114,7 +112,7 @@ class NEZEmulator:
 
     def cleanup_sdl(self):
         """Clean up SDL2 resources"""
-        if hasattr(self, 'audio_device') and self.audio_device:
+        if hasattr(self, "audio_device") and self.audio_device:
             sdl2.SDL_CloseAudioDevice(self.audio_device)
         if self.texture:
             sdl2.SDL_DestroyTexture(self.texture)
@@ -240,7 +238,7 @@ class NEZEmulator:
         self.running = True
 
         # Start audio playback
-        if hasattr(self, 'audio_device') and self.audio_device:
+        if hasattr(self, "audio_device") and self.audio_device:
             sdl2.SDL_PauseAudioDevice(self.audio_device, 0)
 
         print("Starting emulator...")
