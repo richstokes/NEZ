@@ -6,17 +6,17 @@ Contains optimizations based on the reference C implementation analysis
 # CPU optimizations
 CPU_OPTIMIZATIONS = {
     "use_dispatch_table": True,  # Use function dispatch table instead of getattr
-    "bulk_processing": True,  # Process multiple cycles at once when possible
+    "bulk_processing": False,  # Process multiple cycles at once when possible - DISABLED for accuracy
     "fast_memory_access": True,  # Optimize memory access patterns
     "reduced_debug_output": True,  # Minimize debug/trace output
 }
 
 # PPU optimizations
 PPU_OPTIMIZATIONS = {
-    "skip_invisible_rendering": True,  # Skip rendering for invisible scanlines
+    "skip_invisible_rendering": False,  # Skip rendering for invisible scanlines - DISABLED for accuracy
     "fast_pixel_update": True,  # Optimize pixel buffer updates
-    "batch_screen_updates": True,  # Update screen in batches
-    "sprite_eval_optimization": True,  # Optimize sprite evaluation
+    "batch_screen_updates": False,  # Update screen in batches - DISABLED for accuracy
+    "sprite_eval_optimization": False,  # Optimize sprite evaluation - DISABLED for accuracy
 }
 
 # APU optimizations

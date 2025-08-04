@@ -1499,10 +1499,6 @@ class CPU:
         self.D = 1
 
     def execute_nop(self, operand, addressing_mode):
-        """No operation"""
-        pass
-
-    def execute_nop(self, operand, addressing_mode):
         # Handle different NOP variants
         if addressing_mode == "immediate":
             pass  # Consume the immediate operand but do nothing

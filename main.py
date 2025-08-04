@@ -82,10 +82,10 @@ class NEZEmulator:
             print(f"Renderer creation failed: {sdl2.SDL_GetError()}")
             return False
 
-        # Create texture for NES screen (256x240 RGBA)
+        # Create texture for NES screen (256x240 ABGR) to match reference implementation
         self.texture = sdl2.SDL_CreateTexture(
             self.renderer,
-            sdl2.SDL_PIXELFORMAT_RGBA8888,
+            sdl2.SDL_PIXELFORMAT_ABGR8888,
             sdl2.SDL_TEXTUREACCESS_STREAMING,
             256,
             240,
@@ -141,16 +141,16 @@ class NEZEmulator:
         """Handle key press"""
         if key == sdl2.SDLK_ESCAPE:
             self.running = False
-        elif key == sdl2.SDLK_r:
+        elif key == sdl2.SDLK_r or key == sdl2.SDLK_F5:  # Reset like reference
             self.nes.reset()
             print("Reset NES")
-        elif key == sdl2.SDLK_z:  # A button
+        elif key == sdl2.SDLK_j:  # A button (match reference: J)
             self.controller_state["A"] = True
-        elif key == sdl2.SDLK_x:  # B button
+        elif key == sdl2.SDLK_k:  # B button (match reference: K)
             self.controller_state["B"] = True
-        elif key == sdl2.SDLK_SPACE:  # Select
+        elif key == sdl2.SDLK_RSHIFT:  # Select (match reference: Shift)
             self.controller_state["Select"] = True
-        elif key == sdl2.SDLK_RETURN:  # Start
+        elif key == sdl2.SDLK_RETURN:  # Start (match reference: Enter)
             self.controller_state["Start"] = True
         elif key == sdl2.SDLK_UP:
             self.controller_state["Up"] = True
@@ -166,13 +166,13 @@ class NEZEmulator:
 
     def handle_keyup(self, key):
         """Handle key release"""
-        if key == sdl2.SDLK_z:  # A button
+        if key == sdl2.SDLK_j:  # A button (match reference: J)
             self.controller_state["A"] = False
-        elif key == sdl2.SDLK_x:  # B button
+        elif key == sdl2.SDLK_k:  # B button (match reference: K)
             self.controller_state["B"] = False
-        elif key == sdl2.SDLK_SPACE:  # Select
+        elif key == sdl2.SDLK_RSHIFT:  # Select (match reference: Shift)
             self.controller_state["Select"] = False
-        elif key == sdl2.SDLK_RETURN:  # Start
+        elif key == sdl2.SDLK_RETURN:  # Start (match reference: Enter)
             self.controller_state["Start"] = False
         elif key == sdl2.SDLK_UP:
             self.controller_state["Up"] = False
@@ -187,33 +187,24 @@ class NEZEmulator:
         self.nes.set_controller_input(1, self.controller_state)
 
     def update_texture(self):
-        """Update SDL texture with NES screen data - optimized"""
+        """Update SDL texture with NES screen data - matching reference implementation"""
         screen = self.nes.get_screen()
 
-        # Pre-allocate pixel array for better performance
-        if not hasattr(self, "_pixel_buffer"):
-            self._pixel_buffer = []
+        # Convert screen pixels to bytes array for SDL_UpdateTexture
+        # SDL expects ABGR8888 format: A, B, G, R bytes in sequence
+        pixels_bytes = bytearray(256 * 240 * 4)
 
-        self._pixel_buffer.clear()
+        for i, pixel in enumerate(screen):
+            # Extract ABGR components from 32-bit pixel value
+            # Our palette is already in ABGR format from PPU
+            base_idx = i * 4
+            pixels_bytes[base_idx] = pixel & 0xFF  # A
+            pixels_bytes[base_idx + 1] = (pixel >> 8) & 0xFF  # B
+            pixels_bytes[base_idx + 2] = (pixel >> 16) & 0xFF  # G
+            pixels_bytes[base_idx + 3] = (pixel >> 24) & 0xFF  # R
 
-        # Optimized pixel conversion - avoid repeated operations
-        for pixel in screen:
-            # Extract ARGB components - optimized bit operations
-            a = 255  # Always opaque for NES
-            r = (pixel >> 16) & 0xFF
-            g = (pixel >> 8) & 0xFF
-            b = pixel & 0xFF
-
-            # Store as RGBA - pack into single operation
-            self._pixel_buffer.extend([r, g, b, a])
-
-        # Convert to bytes
-        pixels_bytes = bytes(self._pixel_buffer)
-
-        # Update texture
-        sdl2.SDL_UpdateTexture(
-            self.texture, None, pixels_bytes, 256 * 4
-        )  # 4 bytes per pixel (RGBA)
+        # Update texture with correct byte order
+        sdl2.SDL_UpdateTexture(self.texture, None, bytes(pixels_bytes), 256 * 4)
 
     def render(self):
         """Render the current frame"""
@@ -249,9 +240,9 @@ class NEZEmulator:
         print("Starting emulator...")
         print("Controls:")
         print("  Arrow keys: D-pad")
-        print("  Z: A button")
-        print("  X: B button")
-        print("  Space: Select")
+        print("  J: A button")
+        print("  K: B button")
+        print("  Right Shift: Select")
         print("  Enter: Start")
         print("  R: Reset")
         print("  Escape: Quit")

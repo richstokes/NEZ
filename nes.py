@@ -62,31 +62,8 @@ class NES:
         self.nmi_delay = 0
         print("NES Reset")
 
-    def step_frame(self):
-        """Step one complete frame (29780.5 CPU cycles) - optimized"""
-        target_cycles = self.cpu_cycles + 29781
-
-        while self.cpu_cycles < target_cycles and not self.ppu.frame_complete:
-            # More efficient: step multiple cycles at once when possible
-            remaining = target_cycles - self.cpu_cycles
-            if remaining > 10:
-                # Process in larger chunks for better performance
-                self.step_bulk(min(remaining, 100))
-            else:
-                self.step()
-
-        self.ppu.frame_complete = False
-        return self.ppu.screen
-
-    def step_bulk(self, cycles):
-        """Process multiple cycles efficiently"""
-        for _ in range(cycles):
-            if self.ppu.frame_complete:
-                break
-            self.step()
-
     def step(self):
-        """Execute one NES step (cycle-accurate)"""
+        """Execute one NES step - cycle-accurate like reference"""
         # Handle pending NMI
         if self.nmi_pending:
             if self.nmi_delay > 0:
@@ -95,16 +72,17 @@ class NES:
                 self.handle_nmi()
                 self.nmi_pending = False
 
-        # Step CPU (it handles its own cycle counting and instruction execution)
+        # Step CPU (returns number of cycles used)
         cpu_cycles = self.cpu.step()
         self.cpu_cycles += cpu_cycles
 
-        # Step PPU (3 PPU cycles per CPU cycle)
+        # Step PPU (3 PPU cycles per CPU cycle for NTSC)
+        # Reference implementation: execute_ppu() called cpu_cycles * 3 times
         for _ in range(cpu_cycles * 3):
             old_status = self.ppu.status
             self.ppu.step()
 
-            # Check for VBlank NMI
+            # Check for VBlank NMI (when status bit 7 transitions from 0 to 1)
             if (self.ppu.status & 0x80) and not (old_status & 0x80):
                 if self.ppu.ctrl & 0x80:  # NMI enabled
                     self.nmi_pending = True
@@ -115,6 +93,25 @@ class NES:
         # Step APU (1 APU cycle per CPU cycle)
         for _ in range(cpu_cycles):
             self.apu.step()
+
+    def step_frame(self):
+        """Step one complete frame - reference implementation style"""
+        # Reset the render flag
+        self.ppu.render = False
+
+        # Execute until PPU signals frame completion or safety limit
+        cycle_count = 0
+        max_cycles = 89342  # NTSC frame cycle count (29780.5 * 3)
+
+        while not self.ppu.render and cycle_count < max_cycles:
+            self.step()
+            cycle_count += 1
+
+        # If we hit the limit, force frame completion
+        if cycle_count >= max_cycles:
+            self.ppu.render = True
+
+        return self.ppu.screen
 
     def handle_nmi(self):
         """Handle Non-Maskable Interrupt"""

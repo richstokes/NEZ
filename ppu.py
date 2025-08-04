@@ -63,14 +63,15 @@ class PPU:
         # Output buffer (256x240 pixels, 32-bit ARGB values)
         self.screen = [0] * (256 * 240)
 
-        # Performance optimization: frame completion flag
-        self.frame_complete = False
+        # Performance optimization: render flag like reference
+        self.render = False
 
         # Optimized rendering: only render when needed
         self.rendering_enabled = True
 
-        # NES color palette (32-bit ARGB values - reference implementation format)
-        self.palette = [
+        # NES color palette (32-bit ARGB values converted to ABGR for SDL compatibility)
+        # Reference implementation uses to_pixel_format() to convert ARGB->ABGR
+        nes_palette_argb = [
             0xFF666666,
             0xFF002A88,
             0xFF1412A7,
@@ -136,6 +137,20 @@ class PPU:
             0xFF000000,
             0xFF000000,
         ]
+
+        # Convert ARGB to ABGR format like reference implementation
+        self.nes_palette = []
+        for color in nes_palette_argb:
+            # Convert ARGB (0xAARRGGBB) to ABGR (0xAABBGGRR)
+            a = (color >> 24) & 0xFF
+            r = (color >> 16) & 0xFF
+            g = (color >> 8) & 0xFF
+            b = color & 0xFF
+            abgr = (a << 24) | (b << 16) | (g << 8) | r
+            self.nes_palette.append(abgr)
+
+        # Initialize palette RAM to mirror the reference implementation
+        # Two-stage lookup: palette_ram[index] -> nes_palette[result]
 
         # PPU timing constants
         self.VISIBLE_SCANLINES = 240
@@ -399,7 +414,7 @@ class PPU:
                 self.scanline = 0
                 self.frame += 1
                 self.odd_frame = not self.odd_frame
-                self.frame_complete = True  # Signal frame completion
+                self.render = True  # Signal frame completion like reference
 
     def render_pixel(self):
         """Render a single pixel - based on reference implementation"""
@@ -460,9 +475,9 @@ class PPU:
             else:
                 palette_addr = bg_palette * 4 + bg_pixel
 
-        # Get final color from palette
+        # Get final color from palette (two-stage lookup like reference)
         color_index = self.palette_ram[palette_addr] & 0x3F
-        color = self.palette[color_index]
+        color = self.nes_palette[color_index]
 
         # Store pixel in screen buffer
         self.screen[y * 256 + x] = color
