@@ -25,6 +25,7 @@ class CPU:
         self.N = 0  # Negative flag
 
         self.cycles = 0
+        self.dma_cycles = 0  # Additional cycles from DMA operations
 
         # Instruction set
         self.instructions = {
@@ -344,6 +345,11 @@ class CPU:
 
     def step(self):
         """Execute one instruction"""
+        # Handle DMA cycles first
+        if self.dma_cycles > 0:
+            self.dma_cycles -= 1
+            return
+
         if self.cycles > 0:
             self.cycles -= 1
             return
@@ -363,6 +369,10 @@ class CPU:
 
         # Execute instruction
         getattr(self, f"execute_{instruction.lower()}")(operand, addressing_mode)
+
+    def add_dma_cycles(self, cycles):
+        """Add DMA cycles that will delay CPU execution"""
+        self.dma_cycles += cycles
 
     def get_operand(self, addressing_mode, operand_length):
         """Get operand based on addressing mode"""

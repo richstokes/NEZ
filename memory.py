@@ -12,6 +12,9 @@ class Memory:
         self.ppu = None  # PPU reference
         self.cpu = None  # CPU reference (for NMI)
 
+        # Open bus value - important for accurate memory behavior
+        self.bus = 0
+
         # Controller state
         self.controller1 = 0
         self.controller2 = 0
@@ -36,56 +39,86 @@ class Memory:
         addr = addr & 0xFFFF
 
         if addr < 0x2000:
-            # Internal RAM (mirrored)
-            return self.ram[addr & 0x7FF]
+            # Internal RAM (mirrored every 2KB)
+            self.bus = self.ram[addr & 0x7FF]
+            return self.bus
         elif addr < 0x4000:
-            # PPU registers (mirrored)
-            return self.ppu.read_register(0x2000 + (addr & 7))
+            # PPU registers (mirrored every 8 bytes)
+            ppu_addr = 0x2000 + (addr & 7)
+            self.bus = self.ppu.read_register(ppu_addr)
+            return self.bus
         elif addr == 0x4016:
             # Controller 1
             result = self.controller1_shift & 1
             self.controller1_shift >>= 1
-            return result
+            # Preserve upper bits from open bus
+            self.bus = (self.bus & 0xE0) | (result & 0x1F)
+            return self.bus
         elif addr == 0x4017:
             # Controller 2
             result = self.controller2_shift & 1
             self.controller2_shift >>= 1
-            return result
+            # Preserve upper bits from open bus
+            self.bus = (self.bus & 0xE0) | (result & 0x1F)
+            return self.bus
         elif addr < 0x4020:
-            # APU and I/O registers
-            return 0  # Not implemented
+            # APU and I/O registers - return open bus for unimplemented
+            return self.bus
         else:
             # Cartridge space
             if self.cartridge:
-                return self.cartridge.cpu_read(addr)
-            return 0
+                self.bus = self.cartridge.cpu_read(addr)
+                return self.bus
+            return self.bus
 
     def write(self, addr, value):
         """Write to CPU memory"""
         addr = addr & 0xFFFF
         value = value & 0xFF
 
+        # Update bus value
+        old_bus = self.bus
+        self.bus = value
+
         if addr < 0x2000:
-            # Internal RAM (mirrored)
+            # Internal RAM (mirrored every 2KB)
             self.ram[addr & 0x7FF] = value
         elif addr < 0x4000:
-            # PPU registers (mirrored)
-            self.ppu.write_register(0x2000 + (addr & 7), value)
+            # PPU registers (mirrored every 8 bytes)
+            ppu_addr = 0x2000 + (addr & 7)
+            self.ppu.write_register(ppu_addr, value)
         elif addr == 0x4014:
-            # OAM DMA
+            # OAM DMA - critical for sprite data transfer
             start_addr = value * 0x100
-            for i in range(256):
-                self.ppu.oam[i] = self.read(start_addr + i)
+
+            # Try to use direct memory access for speed
+            ptr_data, offset = self.get_ptr(start_addr)
+            if ptr_data is not None and offset + 256 <= len(ptr_data):
+                # Fast path - direct memory copy
+                for i in range(256):
+                    self.ppu.oam[i] = ptr_data[offset + i]
+                # Update bus with last byte transferred
+                self.bus = ptr_data[offset + 255]
+            else:
+                # Slow path - use memory reads (handles bank switching)
+                for i in range(256):
+                    self.ppu.oam[i] = self.read(start_addr + i)
+
+            # DMA takes 513-514 CPU cycles (odd/even cycle dependent)
+            if hasattr(self.cpu, "add_dma_cycles"):
+                self.cpu.add_dma_cycles(513 + (self.cpu.cycles & 1))
         elif addr == 0x4016:
             # Controller strobe
             if self.strobe == 1 and (value & 1) == 0:
-                # Latch controller state
+                # Falling edge - latch controller state
                 self.controller1_shift = self.controller1
                 self.controller2_shift = self.controller2
             self.strobe = value & 1
+            # Update bus with mixed old/new values as per hardware
+            self.bus = (old_bus & 0xF0) | (value & 0xF)
         elif addr < 0x4020:
-            # APU and I/O registers
-            pass  # Not implemented
+            # APU and I/O registers - not implemented but preserve bus
+            pass
         else:
             # Cartridge space
             if self.cartridge:
@@ -110,6 +143,16 @@ class Memory:
             self.controller1 = buttons
         elif controller == 2:
             self.controller2 = buttons
+
+    def get_ptr(self, addr):
+        """Get direct memory pointer for fast access (for DMA optimization)"""
+        if addr < 0x2000:
+            # Internal RAM
+            return self.ram, addr & 0x7FF
+        elif 0x6000 <= addr < 0x8000 and self.cartridge and self.cartridge.prg_ram:
+            # PRG RAM
+            return self.cartridge.prg_ram, addr - 0x6000
+        return None, 0
 
 
 class Cartridge:
@@ -178,43 +221,54 @@ class Cartridge:
 
     def cpu_read(self, addr):
         """Read from cartridge (CPU side)"""
-        if 0x6000 <= addr <= 0x7FFF:
-            # PRG RAM
+        if addr < 0x6000:
+            # Expansion ROM area - typically not used, return open bus
+            return 0
+        elif 0x6000 <= addr <= 0x7FFF:
+            # PRG RAM/SRAM
             return self.prg_ram[addr - 0x6000]
         elif addr >= 0x8000:
             # PRG ROM
             if self.mapper == 0:  # NROM
                 if self.prg_rom_size == 1:
-                    # 16KB ROM mirrored
+                    # 16KB ROM mirrored to both 0x8000-0xBFFF and 0xC000-0xFFFF
                     return self.prg_rom[(addr - 0x8000) & 0x3FFF]
                 else:
                     # 32KB ROM
                     return self.prg_rom[addr - 0x8000]
             else:
-                # Other mappers not implemented
+                # Other mappers - simple fallback
                 return self.prg_rom[(addr - 0x8000) % len(self.prg_rom)]
         return 0
 
     def cpu_write(self, addr, value):
         """Write to cartridge (CPU side)"""
-        if 0x6000 <= addr <= 0x7FFF:
-            # PRG RAM
+        if addr < 0x6000:
+            # Expansion ROM area - typically not writable
+            return
+        elif 0x6000 <= addr <= 0x7FFF:
+            # PRG RAM/SRAM
             self.prg_ram[addr - 0x6000] = value
         elif addr >= 0x8000:
-            # Mapper registers (not implemented for NROM)
-            pass
+            # PRG ROM area - mapper register writes
+            if self.mapper == 0:  # NROM
+                # NROM doesn't have mapper registers, writes are ignored
+                pass
+            else:
+                # Other mappers would handle bank switching here
+                pass
 
     def ppu_read(self, addr):
         """Read from cartridge (PPU side)"""
         if addr < 0x2000:
-            # Pattern tables
-            if len(self.chr_rom) > 0:
+            # Pattern tables (CHR ROM/RAM)
+            if addr < len(self.chr_rom):
                 return self.chr_rom[addr]
         return 0
 
     def ppu_write(self, addr, value):
         """Write to cartridge (PPU side)"""
         if addr < 0x2000:
-            # CHR RAM (if no CHR ROM)
-            if self.chr_rom_size == 0:
+            # CHR RAM (if no CHR ROM) - only writable if CHR RAM
+            if self.chr_rom_size == 0 and addr < len(self.chr_rom):
                 self.chr_rom[addr] = value
