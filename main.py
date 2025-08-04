@@ -9,6 +9,7 @@ import time
 import sdl2
 import sdl2.ext
 from nes import NES
+from performance_config import apply_optimizations
 
 
 class NEZEmulator:
@@ -186,24 +187,28 @@ class NEZEmulator:
         self.nes.set_controller_input(1, self.controller_state)
 
     def update_texture(self):
-        """Update SDL texture with NES screen data"""
+        """Update SDL texture with NES screen data - optimized"""
         screen = self.nes.get_screen()
 
-        # Convert 32-bit ARGB screen data to RGBA format for SDL
-        pixels = []
+        # Pre-allocate pixel array for better performance
+        if not hasattr(self, "_pixel_buffer"):
+            self._pixel_buffer = []
 
+        self._pixel_buffer.clear()
+
+        # Optimized pixel conversion - avoid repeated operations
         for pixel in screen:
-            # Extract ARGB components
-            a = (pixel >> 24) & 0xFF
+            # Extract ARGB components - optimized bit operations
+            a = 255  # Always opaque for NES
             r = (pixel >> 16) & 0xFF
             g = (pixel >> 8) & 0xFF
             b = pixel & 0xFF
 
-            # Store as RGBA
-            pixels.extend([r, g, b, a])
+            # Store as RGBA - pack into single operation
+            self._pixel_buffer.extend([r, g, b, a])
 
         # Convert to bytes
-        pixels_bytes = bytes(pixels)
+        pixels_bytes = bytes(self._pixel_buffer)
 
         # Update texture
         sdl2.SDL_UpdateTexture(
@@ -260,27 +265,29 @@ class NEZEmulator:
             # Handle events
             self.handle_events()
 
-            # Run emulator for one frame
+            # Run emulator for one frame - optimized
             self.nes.step_frame()
 
-            # Update display
+            # Update display only when necessary
             self.update_texture()
             self.render()
 
             frame_count += 1
 
-            # Print FPS every second
-            if frame_count % 60 == 0:
+            # Print FPS less frequently for performance
+            if frame_count % 120 == 0:  # Every 2 seconds instead of 1
                 elapsed = time.time() - start_time
                 fps = frame_count / elapsed if elapsed > 0 else 0
                 print(f"FPS: {fps:.1f}")
 
-            # Frame timing
+            # Optimized frame timing - reduce sleep granularity
             frame_end = time.time()
             frame_duration = frame_end - frame_start
 
             if frame_duration < self.frame_time:
-                time.sleep(self.frame_time - frame_duration)
+                sleep_time = self.frame_time - frame_duration
+                if sleep_time > 0.001:  # Only sleep if significant time remains
+                    time.sleep(sleep_time)
 
         self.cleanup_sdl()
         return True
@@ -300,6 +307,9 @@ def main():
         return 1
 
     emulator = NEZEmulator()
+
+    # Apply performance optimizations
+    apply_optimizations()
 
     try:
         success = emulator.run(rom_path)

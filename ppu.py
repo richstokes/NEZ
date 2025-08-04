@@ -63,6 +63,12 @@ class PPU:
         # Output buffer (256x240 pixels, 32-bit ARGB values)
         self.screen = [0] * (256 * 240)
 
+        # Performance optimization: frame completion flag
+        self.frame_complete = False
+
+        # Optimized rendering: only render when needed
+        self.rendering_enabled = True
+
         # NES color palette (32-bit ARGB values - reference implementation format)
         self.palette = [
             0xFF666666,
@@ -306,11 +312,18 @@ class PPU:
                 self.palette_ram[addr] = value
 
     def step(self):
-        """Execute one PPU cycle - based on reference implementation"""
-        # Visible scanlines (0-239)
+        """Execute one PPU cycle - optimized for performance"""
+        # Quick exit for invisible scanlines when rendering is disabled
+        if not self.rendering_enabled and self.scanline >= self.VISIBLE_SCANLINES:
+            self._increment_scanline_cycle()
+            return
+
+        # Visible scanlines (0-239) - only render if necessary
         if self.scanline < self.VISIBLE_SCANLINES:
             if self.cycle > 0 and self.cycle <= self.VISIBLE_DOTS:
-                self.render_pixel()
+                # Only render pixel if rendering is enabled
+                if self.mask & (self.SHOW_BG | self.SHOW_SPRITE):
+                    self.render_pixel()
 
                 # Handle horizontal scrolling at end of each tile
                 if (self.cycle - 1) % 8 == 7 and (self.mask & self.SHOW_BG):
@@ -330,15 +343,16 @@ class PPU:
             ):
                 self.copy_x()
 
-            # Sprite evaluation for next scanline
+            # Sprite evaluation for next scanline - optimize this
             elif self.cycle == 1:
-                self.evaluate_sprites()
+                if self.mask & self.SHOW_SPRITE:
+                    self.evaluate_sprites()
 
-        # Post-render scanline (240)
+        # Post-render scanline (240) - skip processing
         elif self.scanline == self.VISIBLE_SCANLINES:
-            pass  # Do nothing
+            pass  # Do nothing for performance
 
-        # VBlank scanlines (241-260)
+        # VBlank scanlines (241-260) - minimal processing
         elif 241 <= self.scanline <= 260:
             if self.scanline == 241 and self.cycle == 1:
                 self.status |= self.V_BLANK  # Set VBlank flag
@@ -372,6 +386,10 @@ class PPU:
             ):
                 self.cycle += 1
 
+        self._increment_scanline_cycle()
+
+    def _increment_scanline_cycle(self):
+        """Optimized scanline/cycle increment"""
         # Increment cycle and scanline
         self.cycle += 1
         if self.cycle > self.END_DOT:
@@ -381,6 +399,7 @@ class PPU:
                 self.scanline = 0
                 self.frame += 1
                 self.odd_frame = not self.odd_frame
+                self.frame_complete = True  # Signal frame completion
 
     def render_pixel(self):
         """Render a single pixel - based on reference implementation"""

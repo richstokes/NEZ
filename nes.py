@@ -63,13 +63,27 @@ class NES:
         print("NES Reset")
 
     def step_frame(self):
-        """Step one complete frame (29780.5 CPU cycles)"""
+        """Step one complete frame (29780.5 CPU cycles) - optimized"""
         target_cycles = self.cpu_cycles + 29781
 
-        while self.cpu_cycles < target_cycles:
-            self.step()
+        while self.cpu_cycles < target_cycles and not self.ppu.frame_complete:
+            # More efficient: step multiple cycles at once when possible
+            remaining = target_cycles - self.cpu_cycles
+            if remaining > 10:
+                # Process in larger chunks for better performance
+                self.step_bulk(min(remaining, 100))
+            else:
+                self.step()
 
+        self.ppu.frame_complete = False
         return self.ppu.screen
+
+    def step_bulk(self, cycles):
+        """Process multiple cycles efficiently"""
+        for _ in range(cycles):
+            if self.ppu.frame_complete:
+                break
+            self.step()
 
     def step(self):
         """Execute one NES step (cycle-accurate)"""

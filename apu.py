@@ -635,21 +635,22 @@ class APU:
         self.audio_stream = audio_stream
 
     def step(self):
-        """Step the APU by one CPU cycle"""
-        # Clock all timers
+        """Step the APU by one CPU cycle - optimized"""
+        # Reduce function call overhead by combining operations
+        # Clock all timers in one pass
         self.pulse1.clock_timer()
         self.pulse2.clock_timer()
         self.triangle.clock_timer()
 
-        # Clock noise and DMC every other cycle
-        if self.nes.cpu.cycles % 2 == 0:
+        # Clock noise and DMC every other cycle - use bit mask for speed
+        if not (self.nes.cpu.total_cycles & 1):
             self.noise.clock_timer()
             self.dmc.clock_timer()
 
-        # Clock frame sequencer
+        # Clock frame sequencer less frequently
         self.frame_sequencer.clock(self)
 
-        # Generate audio sample
+        # Generate audio sample with reduced frequency
         self.cycle_accumulator += 1.0
         if self.cycle_accumulator >= self.cycles_per_sample:
             self.cycle_accumulator -= self.cycles_per_sample

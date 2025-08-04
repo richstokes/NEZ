@@ -302,7 +302,7 @@ class CPU:
             7,  # F
         ]
 
-        # Instruction set
+        # Instruction set with optimized dispatch
         self.instructions = {
             # Load/Store
             0xA9: ("LDA", "immediate", 2, 2),
@@ -559,6 +559,189 @@ class CPU:
             0x73: ("RRA", "indirect_indexed", 2, 8),
         }
 
+        # Optimized instruction dispatch table for performance
+        self.instruction_dispatch = {
+            0xA9: self.execute_lda,
+            0xA5: self.execute_lda,
+            0xB5: self.execute_lda,
+            0xAD: self.execute_lda,
+            0xBD: self.execute_lda,
+            0xB9: self.execute_lda,
+            0xA1: self.execute_lda,
+            0xB1: self.execute_lda,
+            0xA2: self.execute_ldx,
+            0xA6: self.execute_ldx,
+            0xB6: self.execute_ldx,
+            0xAE: self.execute_ldx,
+            0xBE: self.execute_ldx,
+            0xA0: self.execute_ldy,
+            0xA4: self.execute_ldy,
+            0xB4: self.execute_ldy,
+            0xAC: self.execute_ldy,
+            0xBC: self.execute_ldy,
+            0x85: self.execute_sta,
+            0x95: self.execute_sta,
+            0x8D: self.execute_sta,
+            0x9D: self.execute_sta,
+            0x99: self.execute_sta,
+            0x81: self.execute_sta,
+            0x91: self.execute_sta,
+            0x86: self.execute_stx,
+            0x96: self.execute_stx,
+            0x8E: self.execute_stx,
+            0x84: self.execute_sty,
+            0x94: self.execute_sty,
+            0x8C: self.execute_sty,
+            0xAA: self.execute_tax,
+            0xA8: self.execute_tay,
+            0xBA: self.execute_tsx,
+            0x8A: self.execute_txa,
+            0x9A: self.execute_txs,
+            0x98: self.execute_tya,
+            0x48: self.execute_pha,
+            0x68: self.execute_pla,
+            0x08: self.execute_php,
+            0x28: self.execute_plp,
+            0x69: self.execute_adc,
+            0x65: self.execute_adc,
+            0x75: self.execute_adc,
+            0x6D: self.execute_adc,
+            0x7D: self.execute_adc,
+            0x79: self.execute_adc,
+            0x61: self.execute_adc,
+            0x71: self.execute_adc,
+            0xE9: self.execute_sbc,
+            0xE5: self.execute_sbc,
+            0xF5: self.execute_sbc,
+            0xED: self.execute_sbc,
+            0xFD: self.execute_sbc,
+            0xF9: self.execute_sbc,
+            0xE1: self.execute_sbc,
+            0xF1: self.execute_sbc,
+            0x29: self.execute_and,
+            0x25: self.execute_and,
+            0x35: self.execute_and,
+            0x2D: self.execute_and,
+            0x3D: self.execute_and,
+            0x39: self.execute_and,
+            0x21: self.execute_and,
+            0x31: self.execute_and,
+            0x49: self.execute_eor,
+            0x45: self.execute_eor,
+            0x55: self.execute_eor,
+            0x4D: self.execute_eor,
+            0x5D: self.execute_eor,
+            0x59: self.execute_eor,
+            0x41: self.execute_eor,
+            0x51: self.execute_eor,
+            0x09: self.execute_ora,
+            0x05: self.execute_ora,
+            0x15: self.execute_ora,
+            0x0D: self.execute_ora,
+            0x1D: self.execute_ora,
+            0x19: self.execute_ora,
+            0x01: self.execute_ora,
+            0x11: self.execute_ora,
+            0x0A: self.execute_asl,
+            0x06: self.execute_asl,
+            0x16: self.execute_asl,
+            0x0E: self.execute_asl,
+            0x1E: self.execute_asl,
+            0x4A: self.execute_lsr,
+            0x46: self.execute_lsr,
+            0x56: self.execute_lsr,
+            0x4E: self.execute_lsr,
+            0x5E: self.execute_lsr,
+            0x2A: self.execute_rol,
+            0x26: self.execute_rol,
+            0x36: self.execute_rol,
+            0x2E: self.execute_rol,
+            0x3E: self.execute_rol,
+            0x6A: self.execute_ror,
+            0x66: self.execute_ror,
+            0x76: self.execute_ror,
+            0x6E: self.execute_ror,
+            0x7E: self.execute_ror,
+            0xC9: self.execute_cmp,
+            0xC5: self.execute_cmp,
+            0xD5: self.execute_cmp,
+            0xCD: self.execute_cmp,
+            0xDD: self.execute_cmp,
+            0xD9: self.execute_cmp,
+            0xC1: self.execute_cmp,
+            0xD1: self.execute_cmp,
+            0xE0: self.execute_cpx,
+            0xE4: self.execute_cpx,
+            0xEC: self.execute_cpx,
+            0xC0: self.execute_cpy,
+            0xC4: self.execute_cpy,
+            0xCC: self.execute_cpy,
+            0x24: self.execute_bit,
+            0x2C: self.execute_bit,
+            0xE6: self.execute_inc,
+            0xF6: self.execute_inc,
+            0xEE: self.execute_inc,
+            0xFE: self.execute_inc,
+            0xE8: self.execute_inx,
+            0xC8: self.execute_iny,
+            0xC6: self.execute_dec,
+            0xD6: self.execute_dec,
+            0xCE: self.execute_dec,
+            0xDE: self.execute_dec,
+            0xCA: self.execute_dex,
+            0x88: self.execute_dey,
+            0x10: self.execute_bpl,
+            0x30: self.execute_bmi,
+            0x50: self.execute_bvc,
+            0x70: self.execute_bvs,
+            0x90: self.execute_bcc,
+            0xB0: self.execute_bcs,
+            0xD0: self.execute_bne,
+            0xF0: self.execute_beq,
+            0x4C: self.execute_jmp,
+            0x6C: self.execute_jmp,
+            0x20: self.execute_jsr,
+            0x60: self.execute_rts,
+            0x00: self.execute_brk,
+            0x40: self.execute_rti,
+            0x18: self.execute_clc,
+            0x38: self.execute_sec,
+            0x58: self.execute_cli,
+            0x78: self.execute_sei,
+            0xB8: self.execute_clv,
+            0xD8: self.execute_cld,
+            0xF8: self.execute_sed,
+            0xEA: self.execute_nop,
+            # Add NOP variants
+            0x1A: self.execute_nop,
+            0x3A: self.execute_nop,
+            0x5A: self.execute_nop,
+            0x7A: self.execute_nop,
+            0xDA: self.execute_nop,
+            0xFA: self.execute_nop,
+            0x80: self.execute_nop,
+            0x82: self.execute_nop,
+            0x89: self.execute_nop,
+            0xC2: self.execute_nop,
+            0xE2: self.execute_nop,
+            0x04: self.execute_nop,
+            0x44: self.execute_nop,
+            0x64: self.execute_nop,
+            0x14: self.execute_nop,
+            0x34: self.execute_nop,
+            0x54: self.execute_nop,
+            0x74: self.execute_nop,
+            0xD4: self.execute_nop,
+            0xF4: self.execute_nop,
+            0x0C: self.execute_nop,
+            0x1C: self.execute_nop,
+            0x3C: self.execute_nop,
+            0x5C: self.execute_nop,
+            0x7C: self.execute_nop,
+            0xDC: self.execute_nop,
+            0xFC: self.execute_nop,
+        }
+
     def reset(self):
         """Reset the CPU to initial state"""
         self.A = 0
@@ -642,8 +825,12 @@ class CPU:
             addressing_mode, length - 1, instruction
         )
 
-        # Execute the instruction immediately (integrated execution model)
-        getattr(self, f"execute_{instruction.lower()}")(address, addressing_mode)
+        # Optimized instruction execution using dispatch table
+        if opcode in self.instruction_dispatch:
+            self.instruction_dispatch[opcode](address, addressing_mode)
+        else:
+            # Fallback to dynamic dispatch for unofficial opcodes
+            getattr(self, f"execute_{instruction.lower()}")(address, addressing_mode)
 
         # Prepare for branch instructions (they need special handling)
         if instruction in ["BPL", "BMI", "BVC", "BVS", "BCC", "BCS", "BNE", "BEQ"]:
@@ -992,24 +1179,16 @@ class CPU:
 
     # Instruction implementations - Updated for hardware accuracy
     def execute_lda(self, operand, addressing_mode):
-        if addressing_mode == "immediate":
-            self.A = self.memory.read(operand)
-        else:
-            self.A = self.memory.read(operand)
+        # Optimized: avoid duplicate reads for immediate mode
+        self.A = self.memory.read(operand)
         self.set_zero_negative(self.A)
 
     def execute_ldx(self, operand, addressing_mode):
-        if addressing_mode == "immediate":
-            self.X = self.memory.read(operand)
-        else:
-            self.X = self.memory.read(operand)
+        self.X = self.memory.read(operand)
         self.set_zero_negative(self.X)
 
     def execute_ldy(self, operand, addressing_mode):
-        if addressing_mode == "immediate":
-            self.Y = self.memory.read(operand)
-        else:
-            self.Y = self.memory.read(operand)
+        self.Y = self.memory.read(operand)
         self.set_zero_negative(self.Y)
 
     def execute_sta(self, operand, addressing_mode):
@@ -1061,11 +1240,8 @@ class CPU:
         self.set_status_byte((status & ~0x30) | (self.get_status_byte() & 0x30))
 
     def execute_adc(self, operand, addressing_mode):
-        if addressing_mode == "immediate":
-            value = self.memory.read(operand)
-        else:
-            value = self.memory.read(operand)
-
+        # Optimized: single read operation
+        value = self.memory.read(operand)
         result = self.A + value + self.C
 
         # Set overflow flag
@@ -1078,11 +1254,8 @@ class CPU:
         self.set_zero_negative(self.A)
 
     def execute_sbc(self, operand, addressing_mode):
-        if addressing_mode == "immediate":
-            value = self.memory.read(operand)
-        else:
-            value = self.memory.read(operand)
-
+        # Optimized: single read operation
+        value = self.memory.read(operand)
         result = self.A - value - (1 - self.C)
 
         # Set overflow flag
@@ -1095,29 +1268,20 @@ class CPU:
         self.set_zero_negative(self.A)
 
     def execute_and(self, operand, addressing_mode):
-        if addressing_mode == "immediate":
-            value = self.memory.read(operand)
-        else:
-            value = self.memory.read(operand)
-
+        # Optimized: single read operation
+        value = self.memory.read(operand)
         self.A = self.A & value
         self.set_zero_negative(self.A)
 
     def execute_eor(self, operand, addressing_mode):
-        if addressing_mode == "immediate":
-            value = self.memory.read(operand)
-        else:
-            value = self.memory.read(operand)
-
+        # Optimized: single read operation
+        value = self.memory.read(operand)
         self.A = self.A ^ value
         self.set_zero_negative(self.A)
 
     def execute_ora(self, operand, addressing_mode):
-        if addressing_mode == "immediate":
-            value = self.memory.read(operand)
-        else:
-            value = self.memory.read(operand)
-
+        # Optimized: single read operation
+        value = self.memory.read(operand)
         self.A = self.A | value
         self.set_zero_negative(self.A)
 
@@ -1182,31 +1346,22 @@ class CPU:
             self.set_zero_negative(value)
 
     def execute_cmp(self, operand, addressing_mode):
-        if addressing_mode == "immediate":
-            value = self.memory.read(operand)
-        else:
-            value = self.memory.read(operand)
-
+        # Optimized: single read operation
+        value = self.memory.read(operand)
         result = self.A - value
         self.C = 1 if self.A >= value else 0
         self.set_zero_negative(result & 0xFF)
 
     def execute_cpx(self, operand, addressing_mode):
-        if addressing_mode == "immediate":
-            value = self.memory.read(operand)
-        else:
-            value = self.memory.read(operand)
-
+        # Optimized: single read operation
+        value = self.memory.read(operand)
         result = self.X - value
         self.C = 1 if self.X >= value else 0
         self.set_zero_negative(result & 0xFF)
 
     def execute_cpy(self, operand, addressing_mode):
-        if addressing_mode == "immediate":
-            value = self.memory.read(operand)
-        else:
-            value = self.memory.read(operand)
-
+        # Optimized: single read operation
+        value = self.memory.read(operand)
         result = self.Y - value
         self.C = 1 if self.Y >= value else 0
         self.set_zero_negative(result & 0xFF)
@@ -1342,6 +1497,10 @@ class CPU:
 
     def execute_sed(self, operand, addressing_mode):
         self.D = 1
+
+    def execute_nop(self, operand, addressing_mode):
+        """No operation"""
+        pass
 
     def execute_nop(self, operand, addressing_mode):
         # Handle different NOP variants
