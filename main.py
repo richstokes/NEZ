@@ -169,14 +169,14 @@ class NEZEmulator:
 
         # Convert 32-bit ARGB screen data to RGBA format for SDL
         pixels = []
-        
+
         for pixel in screen:
             # Extract ARGB components
             a = (pixel >> 24) & 0xFF
             r = (pixel >> 16) & 0xFF
             g = (pixel >> 8) & 0xFF
             b = pixel & 0xFF
-            
+
             # Store as RGBA
             pixels.extend([r, g, b, a])
 
@@ -184,7 +184,9 @@ class NEZEmulator:
         pixels_bytes = bytes(pixels)
 
         # Update texture
-        sdl2.SDL_UpdateTexture(self.texture, None, pixels_bytes, 256 * 4)  # 4 bytes per pixel (RGBA)
+        sdl2.SDL_UpdateTexture(
+            self.texture, None, pixels_bytes, 256 * 4
+        )  # 4 bytes per pixel (RGBA)
 
     def render(self):
         """Render the current frame"""

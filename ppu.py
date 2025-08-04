@@ -40,7 +40,7 @@ class PPU:
         self.at_byte = 0  # Attribute table byte
         self.bg_low_byte = 0  # Background pattern low byte
         self.bg_high_byte = 0  # Background pattern high byte
-        
+
         # Background shift registers (16-bit for proper scrolling)
         self.bg_shift_pattern_low = 0
         self.bg_shift_pattern_high = 0
@@ -65,14 +65,70 @@ class PPU:
 
         # NES color palette (32-bit ARGB values - reference implementation format)
         self.palette = [
-            0xff666666, 0xff002a88, 0xff1412a7, 0xff3b00a4, 0xff5c007e, 0xff6e0040, 0xff6c0600, 0xff561d00,
-            0xff333500, 0xff0b4800, 0xff005200, 0xff004f08, 0xff00404d, 0xff000000, 0xff000000, 0xff000000,
-            0xffadadad, 0xff155fd9, 0xff4240ff, 0xff7527fe, 0xffa01acc, 0xffb71e7b, 0xffb53120, 0xff994e00,
-            0xff6b6d00, 0xff388700, 0xff0c9300, 0xff008f32, 0xff007c8d, 0xff000000, 0xff000000, 0xff000000,
-            0xfffffeff, 0xff64b0ff, 0xff9290ff, 0xffc676ff, 0xfff36aff, 0xfffe6ecc, 0xfffe8170, 0xffea9e22,
-            0xffbcbe00, 0xff88d800, 0xff5ce430, 0xff45e082, 0xff48cdde, 0xff4f4f4f, 0xff000000, 0xff000000,
-            0xfffffeff, 0xffc0dfff, 0xffd3d2ff, 0xffe8c8ff, 0xfffbc2ff, 0xfffec4ea, 0xfffeccc5, 0xfff7d8a5,
-            0xffe4e594, 0xffcfef96, 0xffbdf4ab, 0xffb3f3cc, 0xffb5ebf2, 0xffb8b8b8, 0xff000000, 0xff000000,
+            0xFF666666,
+            0xFF002A88,
+            0xFF1412A7,
+            0xFF3B00A4,
+            0xFF5C007E,
+            0xFF6E0040,
+            0xFF6C0600,
+            0xFF561D00,
+            0xFF333500,
+            0xFF0B4800,
+            0xFF005200,
+            0xFF004F08,
+            0xFF00404D,
+            0xFF000000,
+            0xFF000000,
+            0xFF000000,
+            0xFFADADAD,
+            0xFF155FD9,
+            0xFF4240FF,
+            0xFF7527FE,
+            0xFFA01ACC,
+            0xFFB71E7B,
+            0xFFB53120,
+            0xFF994E00,
+            0xFF6B6D00,
+            0xFF388700,
+            0xFF0C9300,
+            0xFF008F32,
+            0xFF007C8D,
+            0xFF000000,
+            0xFF000000,
+            0xFF000000,
+            0xFFFFFEFF,
+            0xFF64B0FF,
+            0xFF9290FF,
+            0xFFC676FF,
+            0xFFF36AFF,
+            0xFFFE6ECC,
+            0xFFFE8170,
+            0xFFEA9E22,
+            0xFFBCBE00,
+            0xFF88D800,
+            0xFF5CE430,
+            0xFF45E082,
+            0xFF48CDDE,
+            0xFF4F4F4F,
+            0xFF000000,
+            0xFF000000,
+            0xFFFFFEFF,
+            0xFFC0DFFF,
+            0xFFD3D2FF,
+            0xFFE8C8FF,
+            0xFFFBC2FF,
+            0xFFFEC4EA,
+            0xFFFECCC5,
+            0xFFF7D8A5,
+            0xFFE4E594,
+            0xFFCFEF96,
+            0xFFBDF4AB,
+            0xFFB3F3CC,
+            0xFFB5EBF2,
+            0xFFB8B8B8,
+            0xFF000000,
+            0xFF000000,
         ]
 
         # PPU timing constants
@@ -156,7 +212,7 @@ class PPU:
     def write_register(self, addr, value):
         """Write to PPU register"""
         self.bus = value
-        
+
         if addr == 0x2000:  # PPUCTRL
             self.ctrl = value
             self.t = (self.t & 0xF3FF) | ((value & 0x03) << 10)
@@ -255,7 +311,7 @@ class PPU:
         if self.scanline < self.VISIBLE_SCANLINES:
             if self.cycle > 0 and self.cycle <= self.VISIBLE_DOTS:
                 self.render_pixel()
-                
+
                 # Handle horizontal scrolling at end of each tile
                 if (self.cycle - 1) % 8 == 7 and (self.mask & self.SHOW_BG):
                     if (self.v & self.COARSE_X) == 31:
@@ -263,15 +319,17 @@ class PPU:
                         self.v ^= 0x400  # Switch horizontal nametable
                     else:
                         self.v += 1
-                        
+
             # Increment Y at end of visible area
             elif self.cycle == self.VISIBLE_DOTS + 1 and (self.mask & self.SHOW_BG):
                 self.increment_y()
-                
+
             # Copy X from temp at start of next scanline prep
-            elif self.cycle == self.VISIBLE_DOTS + 2 and (self.mask & (self.SHOW_BG | self.SHOW_SPRITE)):
+            elif self.cycle == self.VISIBLE_DOTS + 2 and (
+                self.mask & (self.SHOW_BG | self.SHOW_SPRITE)
+            ):
                 self.copy_x()
-                
+
             # Sprite evaluation for next scanline
             elif self.cycle == 1:
                 self.evaluate_sprites()
@@ -294,17 +352,25 @@ class PPU:
                 self.status &= ~(self.V_BLANK | self.SPRITE_0_HIT)
                 self.sprite_zero_hit = False
                 self.sprite_overflow = False
-                
+
             # Copy Y position from temp register during pre-render
-            elif 280 <= self.cycle <= 304 and (self.mask & (self.SHOW_BG | self.SHOW_SPRITE)):
+            elif 280 <= self.cycle <= 304 and (
+                self.mask & (self.SHOW_BG | self.SHOW_SPRITE)
+            ):
                 self.copy_y()
-                
-            # Copy X position 
-            elif self.cycle == self.VISIBLE_DOTS + 2 and (self.mask & (self.SHOW_BG | self.SHOW_SPRITE)):
+
+            # Copy X position
+            elif self.cycle == self.VISIBLE_DOTS + 2 and (
+                self.mask & (self.SHOW_BG | self.SHOW_SPRITE)
+            ):
                 self.copy_x()
-                
+
             # Skip cycle on odd frames if rendering is enabled
-            elif self.cycle == self.END_DOT - 1 and self.frame & 1 and (self.mask & (self.SHOW_BG | self.SHOW_SPRITE)):
+            elif (
+                self.cycle == self.END_DOT - 1
+                and self.frame & 1
+                and (self.mask & (self.SHOW_BG | self.SHOW_SPRITE))
+            ):
                 self.cycle += 1
 
         # Increment cycle and scanline
@@ -330,7 +396,9 @@ class PPU:
         bg_palette = 0
 
         if self.mask & self.SHOW_BG:
-            if x >= 8 or (self.mask & self.SHOW_BG_8):  # Show background in leftmost 8 pixels
+            if x >= 8 or (
+                self.mask & self.SHOW_BG_8
+            ):  # Show background in leftmost 8 pixels
                 bg_pixel = self.render_background()
                 bg_palette = bg_pixel >> 2
                 bg_pixel &= 0x3
@@ -342,7 +410,9 @@ class PPU:
         sprite_zero = False
 
         if self.mask & self.SHOW_SPRITE:
-            if x >= 8 or (self.mask & self.SHOW_SPRITE_8):  # Show sprites in leftmost 8 pixels
+            if x >= 8 or (
+                self.mask & self.SHOW_SPRITE_8
+            ):  # Show sprites in leftmost 8 pixels
                 sprite_info = self.render_sprites(bg_pixel)
                 if sprite_info:
                     sprite_pixel = sprite_info & 0x3
@@ -352,7 +422,7 @@ class PPU:
 
         # Determine final pixel color
         palette_addr = 0
-        
+
         if bg_pixel == 0 and sprite_pixel == 0:
             # Both transparent - use backdrop color
             palette_addr = 0
@@ -375,7 +445,7 @@ class PPU:
         # Get final color from palette
         color_index = self.palette_ram[palette_addr] & 0x3F
         color = self.palette[color_index]
-        
+
         # Store pixel in screen buffer
         self.screen[y * 256 + x] = color
 
@@ -389,22 +459,24 @@ class PPU:
 
         # Calculate tile address
         tile_addr = 0x2000 | (self.v & 0xFFF)
-        
-        # Calculate attribute address  
-        attr_addr = 0x23C0 | (self.v & 0x0C00) | ((self.v >> 4) & 0x38) | ((self.v >> 2) & 0x07)
+
+        # Calculate attribute address
+        attr_addr = (
+            0x23C0 | (self.v & 0x0C00) | ((self.v >> 4) & 0x38) | ((self.v >> 2) & 0x07)
+        )
 
         # Get tile index from nametable
         tile_index = self.read_vram(tile_addr)
-        
+
         # Calculate pattern address
-        pattern_addr = (tile_index * 16 + ((self.v >> 12) & 0x7))
+        pattern_addr = tile_index * 16 + ((self.v >> 12) & 0x7)
         if self.ctrl & self.BG_TABLE:
             pattern_addr |= 0x1000
 
         # Get pattern data
         pattern_low = self.read_vram(pattern_addr) >> (7 - fine_x)
         pattern_high = self.read_vram(pattern_addr + 8) >> (7 - fine_x)
-        
+
         pixel = (pattern_low & 1) | ((pattern_high & 1) << 1)
 
         if not pixel:
@@ -413,36 +485,36 @@ class PPU:
         # Get attribute data
         attr = self.read_vram(attr_addr)
         palette = (attr >> ((self.v >> 4) & 4 | self.v & 2)) & 0x3
-        
+
         return pixel | (palette << 2)
 
     def render_sprites(self, bg_pixel):
         """Render sprite pixel - based on reference implementation"""
         x = self.cycle - 1
         y = self.scanline
-        
+
         sprite_height = 16 if self.ctrl & self.LONG_SPRITE else 8
-        
+
         for i in range(self.oam_cache_len):
             sprite_idx = self.oam_cache[i]
             sprite_x = self.oam[sprite_idx + 3]
-            
+
             if x < sprite_x or x >= sprite_x + 8:
                 continue
-                
+
             sprite_y = self.oam[sprite_idx] + 1
             tile = self.oam[sprite_idx + 1]
             attr = self.oam[sprite_idx + 2]
-            
+
             x_offset = x - sprite_x
             y_offset = y - sprite_y
-            
+
             # Handle sprite flipping
             if not (attr & 0x40):  # Horizontal flip
                 x_offset = 7 - x_offset
             if attr & 0x80:  # Vertical flip
                 y_offset = sprite_height - 1 - y_offset
-                
+
             # Calculate tile address
             if sprite_height == 16:
                 # 8x16 sprites
@@ -456,27 +528,27 @@ class PPU:
                 # 8x8 sprites
                 table = 1 if self.ctrl & self.SPRITE_TABLE else 0
                 tile_addr = table * 0x1000 + tile * 16 + y_offset
-                
+
             # Get pattern data
             pattern_low = (self.read_vram(tile_addr) >> x_offset) & 1
             pattern_high = (self.read_vram(tile_addr + 8) >> x_offset) & 1
-            
+
             pixel = pattern_low | (pattern_high << 1)
-            
+
             if not pixel:
                 continue
-                
+
             palette = attr & 0x3
             priority = (attr >> 5) & 1
-            sprite_zero = (i == 0)
-            
+            sprite_zero = i == 0
+
             # Check sprite 0 hit
             if sprite_zero and bg_pixel and pixel and x < 255:
                 if not (self.status & self.SPRITE_0_HIT):
                     self.status |= self.SPRITE_0_HIT
-                    
+
             return pixel | (palette << 2) | (priority << 5) | (sprite_zero << 6)
-            
+
         return 0
 
     def increment_y(self):
@@ -486,7 +558,7 @@ class PPU:
         else:
             self.v &= ~self.FINE_Y
             coarse_y = (self.v & self.COARSE_Y) >> 5
-            
+
             if coarse_y == 29:
                 coarse_y = 0
                 self.v ^= 0x800  # Toggle vertical nametable
@@ -494,7 +566,7 @@ class PPU:
                 coarse_y = 0
             else:
                 coarse_y += 1
-                
+
             self.v = (self.v & ~self.COARSE_Y) | (coarse_y << 5)
 
     def copy_x(self):
@@ -509,12 +581,12 @@ class PPU:
         """Evaluate sprites for current scanline - based on reference implementation"""
         self.oam_cache = [0] * 8
         self.oam_cache_len = 0
-        
+
         sprite_height = 16 if self.ctrl & self.LONG_SPRITE else 8
-        
+
         for i in range(64):
             sprite_y = self.oam[i * 4]
-            
+
             # Check if sprite is on current scanline
             diff = self.scanline - sprite_y
             if 0 <= diff < sprite_height:
