@@ -10,6 +10,7 @@ import sdl2
 import sdl2.ext
 from nes import NES
 from performance_config import apply_optimizations
+from utils import debug_print
 
 
 class NEZEmulator:
@@ -127,6 +128,8 @@ class NEZEmulator:
         """Handle SDL events"""
         event = sdl2.SDL_Event()
 
+        # debug_print(f"Handling events - {self.running}")
+
         while sdl2.SDL_PollEvent(event):
             if event.type == sdl2.SDL_QUIT:
                 self.running = False
@@ -189,6 +192,7 @@ class NEZEmulator:
     def update_texture(self):
         """Update SDL texture with NES screen data - matching reference implementation"""
         screen = self.nes.get_screen()
+        # debug_print("Updating texture with NES screen data")
 
         # Convert screen pixels to bytes array for SDL_UpdateTexture
         # SDL expects ABGR8888 format: A, B, G, R bytes in sequence

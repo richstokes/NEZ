@@ -21,6 +21,8 @@ class Memory:
         self.controller2 = 0
         self.controller1_shift = 0
         self.controller2_shift = 0
+        self.controller1_index = 0
+        self.controller2_index = 0
         self.strobe = 0
 
     def set_cartridge(self, cartridge):
@@ -59,18 +61,33 @@ class Memory:
                 return self.bus
             return self.bus
         elif addr == 0x4016:
-            # Controller 1
-            result = self.controller1_shift & 1
-            self.controller1_shift >>= 1
-            # Preserve upper bits from open bus
-            self.bus = (self.bus & 0xE0) | (result & 0x1F)
+            # Controller 1 - NES standard controller read
+            if self.controller1_index > 7:
+                # Return 1 for reads beyond 8 buttons (open bus)
+                result = 1
+            else:
+                # Return the current bit
+                result = (self.controller1_shift >> self.controller1_index) & 1
+                if not self.strobe:
+                    # Only advance index if not strobing
+                    self.controller1_index += 1
+
+            # Preserve upper bits from open bus (bit 7-5) and mix in result
+            self.bus = (
+                (self.bus & 0xE0) | (result & 0x01) | 0x40
+            )  # Bit 6 often set on real hardware
             return self.bus
         elif addr == 0x4017:
-            # Controller 2
-            result = self.controller2_shift & 1
-            self.controller2_shift >>= 1
+            # Controller 2 - same logic as controller 1
+            if self.controller2_index > 7:
+                result = 1
+            else:
+                result = (self.controller2_shift >> self.controller2_index) & 1
+                if not self.strobe:
+                    self.controller2_index += 1
+
             # Preserve upper bits from open bus
-            self.bus = (self.bus & 0xE0) | (result & 0x1F)
+            self.bus = (self.bus & 0xE0) | (result & 0x01) | 0x40
             return self.bus
         elif addr < 0x4020:
             # APU and I/O registers - return open bus for unimplemented
@@ -119,14 +136,19 @@ class Memory:
             if hasattr(self.cpu, "add_dma_cycles"):
                 self.cpu.add_dma_cycles(513)
         elif addr == 0x4016:
-            # Controller strobe
-            if self.strobe == 1 and (value & 1) == 0:
-                # Falling edge - latch controller state
+            # Controller strobe register - controls both controllers
+            old_strobe = self.strobe
+            self.strobe = value & 1
+
+            if self.strobe:
+                # Strobe high - reset controller read indices and latch current state
+                self.controller1_index = 0
+                self.controller2_index = 0
                 self.controller1_shift = self.controller1
                 self.controller2_shift = self.controller2
-            self.strobe = value & 1
+
             # Update bus with mixed old/new values as per hardware
-            self.bus = (old_bus & 0xF0) | (value & 0xF)
+            self.bus = (old_bus & 0xE0) | (value & 0x1F)
         elif addr >= 0x4000 and addr <= 0x4017:
             # APU registers
             if self.apu:

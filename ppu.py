@@ -3,6 +3,8 @@ NES PPU (Picture Processing Unit) Emulator
 Handles graphics rendering for the NES
 """
 
+from utils import debug_print
+
 
 class PPU:
     def __init__(self, memory):
@@ -327,21 +329,19 @@ class PPU:
                 self.palette_ram[addr] = value
 
     def step(self):
-        """Execute one PPU cycle - optimized for performance"""
-        # Quick exit for invisible scanlines when rendering is disabled
-        if not self.rendering_enabled and self.scanline >= self.VISIBLE_SCANLINES:
-            self._increment_scanline_cycle()
-            return
-
-        # Visible scanlines (0-239) - only render if necessary
+        """Execute one PPU cycle"""
+        # Visible scanlines (0-239)
         if self.scanline < self.VISIBLE_SCANLINES:
             if self.cycle > 0 and self.cycle <= self.VISIBLE_DOTS:
-                # Only render pixel if rendering is enabled
+                # Render pixel if rendering is enabled
                 if self.mask & (self.SHOW_BG | self.SHOW_SPRITE):
                     self.render_pixel()
 
-                # Handle horizontal scrolling at end of each tile
-                if (self.cycle - 1) % 8 == 7 and (self.mask & self.SHOW_BG):
+                # Handle horizontal scrolling - based on reference implementation
+                # Calculate fine_x like reference: ((ppu->x + x) % 8)
+                x = self.cycle - 1
+                fine_x = (self.x + x) % 8
+                if fine_x == 7 and (self.mask & self.SHOW_BG):
                     if (self.v & self.COARSE_X) == 31:
                         self.v &= ~self.COARSE_X
                         self.v ^= 0x400  # Switch horizontal nametable
@@ -358,20 +358,19 @@ class PPU:
             ):
                 self.copy_x()
 
-            # Sprite evaluation for next scanline - optimize this
+            # Sprite evaluation for next scanline
             elif self.cycle == 1:
                 if self.mask & self.SHOW_SPRITE:
                     self.evaluate_sprites()
 
-        # Post-render scanline (240) - skip processing
+        # Post-render scanline (240) - do nothing
         elif self.scanline == self.VISIBLE_SCANLINES:
-            pass  # Do nothing for performance
+            pass
 
-        # VBlank scanlines (241-260) - minimal processing
+        # VBlank scanlines (241-260)
         elif 241 <= self.scanline <= 260:
             if self.scanline == 241 and self.cycle == 1:
                 self.status |= self.V_BLANK  # Set VBlank flag
-                # NMI handling is done by the NES class watching for status changes
 
         # Pre-render scanline (261)
         else:
@@ -401,20 +400,22 @@ class PPU:
             ):
                 self.cycle += 1
 
-        self._increment_scanline_cycle()
-
-    def _increment_scanline_cycle(self):
-        """Optimized scanline/cycle increment"""
-        # Increment cycle and scanline
+        # Increment dots and scanlines (match reference implementation exactly)
         self.cycle += 1
-        if self.cycle > self.END_DOT:
+        if self.cycle >= self.DOTS_PER_SCANLINE:
             self.cycle = 0
             self.scanline += 1
-            if self.scanline > 261:
+            if self.scanline >= self.SCANLINES_PER_FRAME:
                 self.scanline = 0
-                self.frame += 1
                 self.odd_frame = not self.odd_frame
-                self.render = True  # Signal frame completion like reference
+                # Signal frame completion when we wrap back to scanline 0
+                self.render = True
+                self.frame += 1
+
+    def _increment_scanline_cycle(self):
+        """Optimized scanline/cycle increment - DEPRECATED"""
+        # This method is no longer used since we inline the logic above
+        pass
 
     def render_pixel(self):
         """Render a single pixel - based on reference implementation"""
@@ -528,39 +529,41 @@ class PPU:
 
         sprite_height = 16 if self.ctrl & self.LONG_SPRITE else 8
 
-        for i in range(self.oam_cache_len):
-            sprite_idx = self.oam_cache[i]
+        # Iterate through sprites in priority order (index 0 = highest priority)
+        for j in range(self.oam_cache_len):
+            sprite_idx = self.oam_cache[j]
             sprite_x = self.oam[sprite_idx + 3]
 
+            # Check if pixel is within sprite's horizontal range
             if x < sprite_x or x >= sprite_x + 8:
                 continue
 
-            sprite_y = self.oam[sprite_idx] + 1
+            sprite_y = (
+                self.oam[sprite_idx] + 1
+            )  # Sprites are offset by 1 scanline like reference
             tile = self.oam[sprite_idx + 1]
             attr = self.oam[sprite_idx + 2]
 
             x_offset = x - sprite_x
             y_offset = y - sprite_y
 
-            # Handle sprite flipping
-            if not (attr & 0x40):  # Horizontal flip
+            # Handle sprite flipping (match reference implementation exactly)
+            if not (attr & 0x40):  # FLIP_HORIZONTAL bit - if NOT set, flip X
                 x_offset = 7 - x_offset
-            if attr & 0x80:  # Vertical flip
+            if attr & 0x80:  # FLIP_VERTICAL bit - if set, flip Y
                 y_offset = sprite_height - 1 - y_offset
 
-            # Calculate tile address
+            # Calculate tile address based on sprite height
             if sprite_height == 16:
-                # 8x16 sprites
-                table = tile & 1
-                tile = tile & 0xFE
-                if y_offset > 7:
-                    tile += 1
-                    y_offset -= 8
-                tile_addr = table * 0x1000 + tile * 16 + y_offset
+                # 8x16 sprites (tile LSB determines pattern table)
+                y_offset = (y_offset & 7) | ((y_offset & 8) << 1)
+                tile_addr = (tile >> 1) * 32 + y_offset
+                tile_addr |= (tile & 1) << 12
             else:
-                # 8x8 sprites
-                table = 1 if self.ctrl & self.SPRITE_TABLE else 0
-                tile_addr = table * 0x1000 + tile * 16 + y_offset
+                # 8x8 sprites (SPRITE_TABLE bit determines pattern table)
+                tile_addr = tile * 16 + y_offset
+                if self.ctrl & self.SPRITE_TABLE:
+                    tile_addr += 0x1000
 
             # Get pattern data
             pattern_low = (self.read_vram(tile_addr) >> x_offset) & 1
@@ -569,20 +572,28 @@ class PPU:
             pixel = pattern_low | (pattern_high << 1)
 
             if not pixel:
-                continue
+                continue  # Transparent pixel
 
             palette = attr & 0x3
-            priority = (attr >> 5) & 1
-            sprite_zero = i == 0
+            priority = (
+                attr >> 5
+            ) & 1  # 0 = in front of background, 1 = behind background
+            sprite_zero = j == 0  # First sprite in OAM cache is sprite 0
 
-            # Check sprite 0 hit
-            if sprite_zero and bg_pixel and pixel and x < 255:
-                if not (self.status & self.SPRITE_0_HIT):
-                    self.status |= self.SPRITE_0_HIT
+            # Check sprite 0 hit (only if both background and sprite 0 are opaque)
+            if (
+                sprite_zero
+                and bg_pixel
+                and pixel
+                and x < 255
+                and not (self.status & self.SPRITE_0_HIT)
+            ):
+                self.status |= self.SPRITE_0_HIT
 
+            # Return sprite info packed into single value
             return pixel | (palette << 2) | (priority << 5) | (sprite_zero << 6)
 
-        return 0
+        return 0  # No sprite found
 
     def increment_y(self):
         """Increment Y position in VRAM address - based on reference implementation"""
@@ -612,22 +623,29 @@ class PPU:
 
     def evaluate_sprites(self):
         """Evaluate sprites for current scanline - based on reference implementation"""
+        # Clear sprite cache
         self.oam_cache = [0] * 8
         self.oam_cache_len = 0
+        self.sprite_overflow = False
 
         sprite_height = 16 if self.ctrl & self.LONG_SPRITE else 8
+        current_scanline = self.scanline
 
+        # Scan all 64 sprites (starting from OAM address for hardware accuracy)
+        sprites_found = 0
         for i in range(64):
             sprite_y = self.oam[i * 4]
 
-            # Check if sprite is on current scanline
-            diff = self.scanline - sprite_y
+            # Check if sprite is on current scanline (match reference exactly)
+            diff = current_scanline - sprite_y
             if 0 <= diff < sprite_height:
-                if self.oam_cache_len < 8:
-                    self.oam_cache[self.oam_cache_len] = i * 4
-                    self.oam_cache_len += 1
+                if sprites_found < 8:
+                    self.oam_cache[sprites_found] = i * 4
+                    sprites_found += 1
                 else:
-                    # Sprite overflow
+                    # Sprite overflow - set flag
                     self.sprite_overflow = True
-                    self.status |= 0x20
+                    self.status |= 0x20  # Set sprite overflow flag
                     break
+
+        self.oam_cache_len = sprites_found

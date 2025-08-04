@@ -7,6 +7,7 @@ from cpu import CPU
 from ppu import PPU
 from apu import APU
 from memory import Memory, Cartridge
+from utils import debug_print
 
 
 class NES:
@@ -99,17 +100,21 @@ class NES:
         # Reset the render flag
         self.ppu.render = False
 
-        # Execute until PPU signals frame completion or safety limit
-        cycle_count = 0
-        max_cycles = 89342  # NTSC frame cycle count (29780.5 * 3)
+        # Debug info, disable in utils.py if not needed
+        debug_print(
+            f"Stepping frame: CPU state: {self.get_cpu_state()}, PPU state: {self.get_ppu_state()}"
+        )
 
-        while not self.ppu.render and cycle_count < max_cycles:
+        # Execute until PPU signals frame completion - simple like reference
+        step_count = 0
+        while not self.ppu.render:
             self.step()
-            cycle_count += 1
-
-        # If we hit the limit, force frame completion
-        if cycle_count >= max_cycles:
-            self.ppu.render = True
+            step_count += 1
+            if step_count > 50000:  # Reduced safety break
+                print(
+                    f"DEBUG: step_frame ran {step_count} steps, PPU at scanline={self.ppu.scanline}, cycle={self.ppu.cycle}, mask={self.ppu.mask}"
+                )
+                break
 
         return self.ppu.screen
 

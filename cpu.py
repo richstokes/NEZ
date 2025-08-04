@@ -4,6 +4,8 @@ Implements the MOS Technology 6502 processor used in the NES
 Hardware-accurate cycle timing and behavior based on reference implementation
 """
 
+from utils import debug_print
+
 
 class CPU:
     def __init__(self, memory):
@@ -46,7 +48,7 @@ class CPU:
             # 0  1  2  3  4  5  6  7  8  9  A  B  C  D  E  F
             7,
             6,
-            0,
+            2,
             8,
             3,
             3,
@@ -62,7 +64,7 @@ class CPU:
             6,  # 0
             2,
             5,
-            0,
+            2,
             8,
             4,
             4,
@@ -78,7 +80,7 @@ class CPU:
             7,  # 1
             6,
             6,
-            0,
+            2,
             8,
             3,
             3,
@@ -94,7 +96,7 @@ class CPU:
             6,  # 2
             2,
             5,
-            0,
+            2,
             8,
             4,
             4,
@@ -110,7 +112,7 @@ class CPU:
             7,  # 3
             6,
             6,
-            0,
+            2,
             8,
             3,
             3,
@@ -126,7 +128,7 @@ class CPU:
             6,  # 4
             2,
             5,
-            0,
+            2,
             8,
             4,
             4,
@@ -142,7 +144,7 @@ class CPU:
             7,  # 5
             6,
             6,
-            0,
+            2,
             8,
             3,
             3,
@@ -158,7 +160,7 @@ class CPU:
             6,  # 6
             2,
             5,
-            0,
+            2,
             8,
             4,
             4,
@@ -190,7 +192,7 @@ class CPU:
             4,  # 8
             2,
             6,
-            0,
+            2,
             6,
             4,
             4,
@@ -222,7 +224,7 @@ class CPU:
             4,  # A
             2,
             5,
-            0,
+            2,
             5,
             4,
             4,
@@ -254,7 +256,7 @@ class CPU:
             6,  # C
             2,
             5,
-            0,
+            2,
             8,
             4,
             4,
@@ -286,7 +288,7 @@ class CPU:
             6,  # E
             2,
             5,
-            0,
+            2,
             8,
             4,
             4,
@@ -557,6 +559,31 @@ class CPU:
             0x7B: ("RRA", "absolute_y", 3, 7),
             0x63: ("RRA", "indexed_indirect", 2, 8),
             0x73: ("RRA", "indirect_indexed", 2, 8),
+            # Additional missing unofficial opcodes
+            0xEB: ("SBC", "immediate", 2, 2),  # Unofficial SBC
+            0xBB: ("LAS", "absolute_y", 3, 4),  # LAS - Load Accumulator and Stack
+            0x9B: ("TAS", "absolute_y", 3, 5),  # TAS - Transfer A and X to Stack
+            0x02: ("KIL", "implied", 1, 2),  # KIL - Kill (jam/halt processor)
+            0x12: ("KIL", "implied", 1, 2),  # KIL
+            0x22: ("KIL", "implied", 1, 2),  # KIL
+            0x32: ("KIL", "implied", 1, 2),  # KIL
+            0x42: ("KIL", "implied", 1, 2),  # KIL
+            0x52: ("KIL", "implied", 1, 2),  # KIL
+            0x62: ("KIL", "implied", 1, 2),  # KIL
+            0x72: ("KIL", "implied", 1, 2),  # KIL
+            0x92: ("KIL", "implied", 1, 2),  # KIL
+            0xB2: ("KIL", "implied", 1, 2),  # KIL
+            0xD2: ("KIL", "implied", 1, 2),  # KIL
+            0xF2: ("KIL", "implied", 1, 2),  # KIL
+            0x9E: ("SHX", "absolute_y", 3, 5),  # SHX - Store X AND (High Byte + 1)
+            0x9F: (
+                "SHA",
+                "absolute_y",
+                3,
+                5,
+            ),  # SHA - Store A AND X AND (High Byte + 1)
+            0x93: ("SHA", "indirect_indexed", 2, 6),  # SHA
+            0x4B: ("ALR", "immediate", 2, 2),  # ALR - AND then LSR
         }
 
         # Optimized instruction dispatch table for performance
@@ -840,6 +867,7 @@ class CPU:
 
     def execute_instruction(self):
         """Legacy method - no longer used with integrated execution model"""
+        debug_print("Executing LEGACY instruction...")
         # This method is kept for compatibility but is no longer called
         pass
 
@@ -1436,12 +1464,12 @@ class CPU:
             self.PC = operand
 
     def execute_bne(self, operand, addressing_mode):
-        if self.Z == 0:
-            self.PC = operand
+        # Don't set PC directly - let _prepare_branch handle it
+        pass
 
     def execute_beq(self, operand, addressing_mode):
-        if self.Z == 1:
-            self.PC = operand
+        # Don't set PC directly - let _prepare_branch handle it
+        pass
 
     def execute_jmp(self, operand, addressing_mode):
         self.PC = operand
@@ -1626,4 +1654,57 @@ class CPU:
         self.C = 1 if result > 255 else 0
 
         self.A = result & 0xFF
+        self.set_zero_negative(self.A)
+
+    def execute_las(self, operand, addressing_mode):
+        """LAS - Load Accumulator and Stack Pointer"""
+        value = self.memory.read(operand)
+        result = value & self.S
+        self.A = result
+        self.X = result
+        self.S = result
+        self.set_zero_negative(result)
+
+    def execute_tas(self, operand, addressing_mode):
+        """TAS - Transfer A and X to Stack Pointer, then store A & X & (high byte + 1)"""
+        self.S = self.A & self.X
+        # Store A & X & (high byte of address + 1)
+        high_byte = (operand >> 8) & 0xFF
+        value = self.A & self.X & (high_byte + 1)
+        self.memory.write(operand, value)
+
+    def execute_kil(self, operand, addressing_mode):
+        """KIL - Kill/Jam the processor (halt)"""
+        # In a real 6502, this would halt the processor
+        # For emulation purposes, we'll just infinite loop by decrementing PC
+        self.PC = (self.PC - 1) & 0xFFFF
+        print(f"KIL instruction executed at PC: 0x{self.PC:04X} - processor halted")
+
+    def execute_shx(self, operand, addressing_mode):
+        """SHX - Store X AND (high byte + 1)"""
+        high_byte = (operand >> 8) & 0xFF
+        value = self.X & (high_byte + 1)
+        # Calculate the actual address with the AND operation
+        actual_addr = ((value << 8) | (operand & 0xFF)) & 0xFFFF
+        self.memory.write(actual_addr, value)
+
+    def execute_sha(self, operand, addressing_mode):
+        """SHA - Store A AND X AND (high byte + 1)"""
+        high_byte = (operand >> 8) & 0xFF
+        value = self.A & self.X & (high_byte + 1)
+        # Calculate the actual address with the AND operation
+        if addressing_mode == "absolute_y":
+            actual_addr = ((value << 8) | (operand & 0xFF)) & 0xFFFF
+        else:
+            actual_addr = operand
+        self.memory.write(actual_addr, value)
+
+    def execute_alr(self, operand, addressing_mode):
+        """ALR - AND then LSR"""
+        value = self.memory.read(operand)
+        # AND with accumulator
+        self.A = self.A & value
+        # LSR on accumulator
+        self.C = self.A & 1
+        self.A = self.A >> 1
         self.set_zero_negative(self.A)
