@@ -74,10 +74,10 @@ class NEZEmulator:
             print(f"Renderer creation failed: {sdl2.SDL_GetError()}")
             return False
 
-        # Create texture for NES screen
+        # Create texture for NES screen (256x240 RGBA)
         self.texture = sdl2.SDL_CreateTexture(
             self.renderer,
-            sdl2.SDL_PIXELFORMAT_RGB24,
+            sdl2.SDL_PIXELFORMAT_RGBA8888,
             sdl2.SDL_TEXTUREACCESS_STREAMING,
             256,
             240,
@@ -167,19 +167,24 @@ class NEZEmulator:
         """Update SDL texture with NES screen data"""
         screen = self.nes.get_screen()
 
-        # Convert screen data to bytes
+        # Convert 32-bit ARGB screen data to RGBA format for SDL
         pixels = []
-
-        for y in range(240):
-            for x in range(256):
-                color = screen[y][x]
-                pixels.extend([color[0], color[1], color[2]])  # R, G, B
+        
+        for pixel in screen:
+            # Extract ARGB components
+            a = (pixel >> 24) & 0xFF
+            r = (pixel >> 16) & 0xFF
+            g = (pixel >> 8) & 0xFF
+            b = pixel & 0xFF
+            
+            # Store as RGBA
+            pixels.extend([r, g, b, a])
 
         # Convert to bytes
         pixels_bytes = bytes(pixels)
 
         # Update texture
-        sdl2.SDL_UpdateTexture(self.texture, None, pixels_bytes, 256 * 3)
+        sdl2.SDL_UpdateTexture(self.texture, None, pixels_bytes, 256 * 4)  # 4 bytes per pixel (RGBA)
 
     def render(self):
         """Render the current frame"""

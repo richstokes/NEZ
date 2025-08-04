@@ -35,13 +35,13 @@ class PPU:
         self.frame = 0
         self.odd_frame = False
 
-        # Background rendering
+        # Background rendering data
         self.nt_byte = 0  # Name table byte
         self.at_byte = 0  # Attribute table byte
         self.bg_low_byte = 0  # Background pattern low byte
         self.bg_high_byte = 0  # Background pattern high byte
-
-        # Shift registers for background
+        
+        # Background shift registers (16-bit for proper scrolling)
         self.bg_shift_pattern_low = 0
         self.bg_shift_pattern_high = 0
         self.bg_shift_attrib_low = 0
@@ -53,83 +53,56 @@ class PPU:
         self.sprite_positions = [0] * 8
         self.sprite_priorities = [0] * 8
         self.sprite_indices = [0] * 8
+        self.oam_cache = [0] * 8  # Cache for sprites on current scanline
+        self.oam_cache_len = 0
 
         # Flags
         self.sprite_zero_hit = False
         self.sprite_overflow = False
 
-        # Output buffer (256x240 pixels, RGB values)
-        self.screen = [[[0, 0, 0] for _ in range(256)] for _ in range(240)]
+        # Output buffer (256x240 pixels, 32-bit ARGB values)
+        self.screen = [0] * (256 * 240)
 
-        # NES color palette (RGB values)
+        # NES color palette (32-bit ARGB values - reference implementation format)
         self.palette = [
-            [84, 84, 84],
-            [0, 30, 116],
-            [8, 16, 144],
-            [48, 0, 136],
-            [68, 0, 100],
-            [92, 0, 48],
-            [84, 4, 0],
-            [60, 24, 0],
-            [32, 42, 0],
-            [8, 58, 0],
-            [0, 64, 0],
-            [0, 60, 0],
-            [0, 50, 60],
-            [0, 0, 0],
-            [0, 0, 0],
-            [0, 0, 0],
-            [152, 150, 152],
-            [8, 76, 196],
-            [48, 50, 236],
-            [92, 30, 228],
-            [136, 20, 176],
-            [160, 20, 100],
-            [152, 34, 32],
-            [120, 60, 0],
-            [84, 90, 0],
-            [40, 114, 0],
-            [8, 124, 0],
-            [0, 118, 40],
-            [0, 102, 120],
-            [0, 0, 0],
-            [0, 0, 0],
-            [0, 0, 0],
-            [236, 238, 236],
-            [76, 154, 236],
-            [120, 124, 236],
-            [176, 98, 236],
-            [228, 84, 236],
-            [236, 88, 180],
-            [236, 106, 100],
-            [212, 136, 32],
-            [160, 170, 0],
-            [116, 196, 0],
-            [76, 208, 32],
-            [56, 204, 108],
-            [56, 180, 204],
-            [60, 60, 60],
-            [0, 0, 0],
-            [0, 0, 0],
-            [236, 238, 236],
-            [168, 204, 236],
-            [188, 188, 236],
-            [212, 178, 236],
-            [236, 174, 236],
-            [236, 174, 212],
-            [236, 180, 176],
-            [228, 196, 144],
-            [204, 210, 120],
-            [180, 222, 120],
-            [168, 226, 144],
-            [152, 226, 180],
-            [160, 214, 228],
-            [160, 162, 160],
-            [0, 0, 0],
-            [0, 0, 0],
+            0xff666666, 0xff002a88, 0xff1412a7, 0xff3b00a4, 0xff5c007e, 0xff6e0040, 0xff6c0600, 0xff561d00,
+            0xff333500, 0xff0b4800, 0xff005200, 0xff004f08, 0xff00404d, 0xff000000, 0xff000000, 0xff000000,
+            0xffadadad, 0xff155fd9, 0xff4240ff, 0xff7527fe, 0xffa01acc, 0xffb71e7b, 0xffb53120, 0xff994e00,
+            0xff6b6d00, 0xff388700, 0xff0c9300, 0xff008f32, 0xff007c8d, 0xff000000, 0xff000000, 0xff000000,
+            0xfffffeff, 0xff64b0ff, 0xff9290ff, 0xffc676ff, 0xfff36aff, 0xfffe6ecc, 0xfffe8170, 0xffea9e22,
+            0xffbcbe00, 0xff88d800, 0xff5ce430, 0xff45e082, 0xff48cdde, 0xff4f4f4f, 0xff000000, 0xff000000,
+            0xfffffeff, 0xffc0dfff, 0xffd3d2ff, 0xffe8c8ff, 0xfffbc2ff, 0xfffec4ea, 0xfffeccc5, 0xfff7d8a5,
+            0xffe4e594, 0xffcfef96, 0xffbdf4ab, 0xffb3f3cc, 0xffb5ebf2, 0xffb8b8b8, 0xff000000, 0xff000000,
         ]
 
+        # PPU timing constants
+        self.VISIBLE_SCANLINES = 240
+        self.VISIBLE_DOTS = 256
+        self.DOTS_PER_SCANLINE = 341
+        self.SCANLINES_PER_FRAME = 262  # NTSC
+        self.END_DOT = 340
+
+        # PPU control flags
+        self.BG_TABLE = 1 << 4
+        self.SPRITE_TABLE = 1 << 3
+        self.SHOW_BG_8 = 1 << 1
+        self.SHOW_SPRITE_8 = 1 << 2
+        self.SHOW_BG = 1 << 3
+        self.SHOW_SPRITE = 1 << 4
+        self.LONG_SPRITE = 1 << 5
+        self.SPRITE_0_HIT = 1 << 6
+        self.V_BLANK = 1 << 7
+        self.GENERATE_NMI = 1 << 7
+
+        # Address bit masks
+        self.COARSE_X = 0x1F
+        self.COARSE_Y = 0x3E0
+        self.FINE_Y = 0x7000
+        self.HORIZONTAL_BITS = 0x41F
+        self.VERTICAL_BITS = 0x7BE0
+
         self.buffer = 0  # PPU data buffer
+        self.bus = 0  # PPU open bus
 
     def reset(self):
         """Reset PPU to initial state"""
@@ -141,7 +114,7 @@ class PPU:
         self.t = 0
         self.x = 0
         self.w = 0
-        self.scanline = 0
+        self.scanline = 261  # Start in pre-render scanline
         self.cycle = 0
         self.frame = 0
         self.odd_frame = False
@@ -152,6 +125,7 @@ class PPU:
         self.oam = [0] * 0x100
 
         self.buffer = 0
+        self.bus = 0
 
     def read_register(self, addr):
         """Read from PPU register"""
@@ -181,6 +155,8 @@ class PPU:
 
     def write_register(self, addr, value):
         """Write to PPU register"""
+        self.bus = value
+        
         if addr == 0x2000:  # PPUCTRL
             self.ctrl = value
             self.t = (self.t & 0xF3FF) | ((value & 0x03) << 10)
@@ -226,18 +202,26 @@ class PPU:
             return self.memory.ppu_read(addr)
         elif addr < 0x3F00:
             # Name tables
-            return self.vram[addr]
+            # Handle mirroring
+            addr = (addr & 0xEFFF) - 0x2000
+            # Simple horizontal mirroring for now
+            if addr >= 0x800:
+                addr = addr % 0x800
+            return self.vram[0x2000 + addr]
         else:
             # Palette RAM
-            addr = addr & 0x1F
-            if addr == 0x10:
-                addr = 0x00
-            elif addr == 0x14:
-                addr = 0x04
-            elif addr == 0x18:
-                addr = 0x08
-            elif addr == 0x1C:
-                addr = 0x0C
+            addr = (addr - 0x3F00) % 0x20
+            # Handle palette mirroring
+            if addr % 4 == 0:
+                # Backdrop colors are mirrored
+                if addr == 0x10:
+                    addr = 0x00
+                elif addr == 0x14:
+                    addr = 0x04
+                elif addr == 0x18:
+                    addr = 0x08
+                elif addr == 0x1C:
+                    addr = 0x0C
             return self.palette_ram[addr]
 
     def write_vram(self, addr, value):
@@ -249,63 +233,83 @@ class PPU:
             self.memory.ppu_write(addr, value)
         elif addr < 0x3F00:
             # Name tables
-            self.vram[addr] = value
+            addr = (addr & 0xEFFF) - 0x2000
+            # Simple horizontal mirroring for now
+            if addr >= 0x800:
+                addr = addr % 0x800
+            self.vram[0x2000 + addr] = value
         else:
             # Palette RAM
-            addr = addr & 0x1F
-            if addr == 0x10:
-                addr = 0x00
-            elif addr == 0x14:
-                addr = 0x04
-            elif addr == 0x18:
-                addr = 0x08
-            elif addr == 0x1C:
-                addr = 0x0C
-            self.palette_ram[addr] = value
+            addr = (addr - 0x3F00) % 0x20
+            # Handle palette mirroring
+            if addr % 4 == 0:
+                self.palette_ram[addr] = value
+                # Mirror backdrop colors
+                self.palette_ram[addr ^ 0x10] = value
+            else:
+                self.palette_ram[addr] = value
 
     def step(self):
-        """Execute one PPU cycle"""
-        # Pre-render scanline
-        if self.scanline == 261:
-            if self.cycle == 1:
-                self.status &= 0x9F  # Clear VBlank and sprite 0 hit
-                self.sprite_zero_hit = False
-                self.sprite_overflow = False
-
-            if self.cycle == 339 and self.odd_frame and (self.mask & 0x18):
-                self.cycle = 0
-                self.scanline = 0
-                self.frame += 1
-                self.odd_frame = not self.odd_frame
-                return
-
-        # Visible scanlines
-        elif 0 <= self.scanline <= 239:
-            if self.cycle == 0:
-                pass  # Idle cycle
-            elif 1 <= self.cycle <= 256:
+        """Execute one PPU cycle - based on reference implementation"""
+        # Visible scanlines (0-239)
+        if self.scanline < self.VISIBLE_SCANLINES:
+            if self.cycle > 0 and self.cycle <= self.VISIBLE_DOTS:
                 self.render_pixel()
-                if self.cycle == 256:
-                    self.increment_y()
-            elif self.cycle == 257:
+                
+                # Handle horizontal scrolling at end of each tile
+                if (self.cycle - 1) % 8 == 7 and (self.mask & self.SHOW_BG):
+                    if (self.v & self.COARSE_X) == 31:
+                        self.v &= ~self.COARSE_X
+                        self.v ^= 0x400  # Switch horizontal nametable
+                    else:
+                        self.v += 1
+                        
+            # Increment Y at end of visible area
+            elif self.cycle == self.VISIBLE_DOTS + 1 and (self.mask & self.SHOW_BG):
+                self.increment_y()
+                
+            # Copy X from temp at start of next scanline prep
+            elif self.cycle == self.VISIBLE_DOTS + 2 and (self.mask & (self.SHOW_BG | self.SHOW_SPRITE)):
                 self.copy_x()
-            elif 321 <= self.cycle <= 336:
-                self.fetch_tile_data()
+                
+            # Sprite evaluation for next scanline
+            elif self.cycle == 1:
+                self.evaluate_sprites()
 
-        # Post-render scanline
-        elif self.scanline == 240:
+        # Post-render scanline (240)
+        elif self.scanline == self.VISIBLE_SCANLINES:
             pass  # Do nothing
 
-        # VBlank scanlines
+        # VBlank scanlines (241-260)
         elif 241 <= self.scanline <= 260:
             if self.scanline == 241 and self.cycle == 1:
-                self.status |= 0x80  # Set VBlank flag
-                if self.ctrl & 0x80:  # NMI enabled
+                self.status |= self.V_BLANK  # Set VBlank flag
+                if self.ctrl & self.GENERATE_NMI:  # NMI enabled
                     self.memory.cpu.nmi = True
+
+        # Pre-render scanline (261)
+        else:
+            if self.cycle == 1:
+                # Clear VBlank and sprite 0 hit
+                self.status &= ~(self.V_BLANK | self.SPRITE_0_HIT)
+                self.sprite_zero_hit = False
+                self.sprite_overflow = False
+                
+            # Copy Y position from temp register during pre-render
+            elif 280 <= self.cycle <= 304 and (self.mask & (self.SHOW_BG | self.SHOW_SPRITE)):
+                self.copy_y()
+                
+            # Copy X position 
+            elif self.cycle == self.VISIBLE_DOTS + 2 and (self.mask & (self.SHOW_BG | self.SHOW_SPRITE)):
+                self.copy_x()
+                
+            # Skip cycle on odd frames if rendering is enabled
+            elif self.cycle == self.END_DOT - 1 and self.frame & 1 and (self.mask & (self.SHOW_BG | self.SHOW_SPRITE)):
+                self.cycle += 1
 
         # Increment cycle and scanline
         self.cycle += 1
-        if self.cycle > 340:
+        if self.cycle > self.END_DOT:
             self.cycle = 0
             self.scanline += 1
             if self.scanline > 261:
@@ -314,7 +318,7 @@ class PPU:
                 self.odd_frame = not self.odd_frame
 
     def render_pixel(self):
-        """Render a single pixel"""
+        """Render a single pixel - based on reference implementation"""
         x = self.cycle - 1
         y = self.scanline
 
@@ -325,15 +329,11 @@ class PPU:
         bg_pixel = 0
         bg_palette = 0
 
-        if self.mask & 0x08:  # Background rendering enabled
-            if x >= 8 or (self.mask & 0x02):  # Show background in leftmost 8 pixels
-                shift = 15 - self.x
-                bg_pixel = ((self.bg_shift_pattern_high >> shift) & 1) << 1 | (
-                    (self.bg_shift_pattern_low >> shift) & 1
-                )
-                bg_palette = ((self.bg_shift_attrib_high >> shift) & 1) << 1 | (
-                    (self.bg_shift_attrib_low >> shift) & 1
-                )
+        if self.mask & self.SHOW_BG:
+            if x >= 8 or (self.mask & self.SHOW_BG_8):  # Show background in leftmost 8 pixels
+                bg_pixel = self.render_background()
+                bg_palette = bg_pixel >> 2
+                bg_pixel &= 0x3
 
         # Get sprite pixel
         sprite_pixel = 0
@@ -341,184 +341,186 @@ class PPU:
         sprite_priority = 0
         sprite_zero = False
 
-        if self.mask & 0x10:  # Sprite rendering enabled
-            for i in range(self.sprite_count):
-                offset = x - self.sprite_positions[i]
-                if 0 <= offset < 8:
-                    if x >= 8 or (
-                        self.mask & 0x04
-                    ):  # Show sprites in leftmost 8 pixels
-                        sprite_pixel = (self.sprite_patterns[i] >> (7 - offset)) & 0x03
-                        if sprite_pixel != 0:
-                            sprite_palette = (self.sprite_indices[i] & 0x03) + 4
-                            sprite_priority = (self.sprite_indices[i] >> 5) & 1
-                            sprite_zero = i == 0
-                            break
+        if self.mask & self.SHOW_SPRITE:
+            if x >= 8 or (self.mask & self.SHOW_SPRITE_8):  # Show sprites in leftmost 8 pixels
+                sprite_info = self.render_sprites(bg_pixel)
+                if sprite_info:
+                    sprite_pixel = sprite_info & 0x3
+                    sprite_palette = (sprite_info >> 2) & 0x3
+                    sprite_priority = (sprite_info >> 5) & 1
+                    sprite_zero = (sprite_info >> 6) & 1
 
-        # Determine final pixel
+        # Determine final pixel color
+        palette_addr = 0
+        
         if bg_pixel == 0 and sprite_pixel == 0:
             # Both transparent - use backdrop color
-            color_index = self.palette_ram[0]
+            palette_addr = 0
         elif bg_pixel == 0 and sprite_pixel > 0:
             # Background transparent, sprite opaque
-            color_index = self.palette_ram[sprite_palette * 4 + sprite_pixel]
+            palette_addr = 0x10 + sprite_palette * 4 + sprite_pixel
         elif bg_pixel > 0 and sprite_pixel == 0:
             # Background opaque, sprite transparent
-            color_index = self.palette_ram[bg_palette * 4 + bg_pixel]
+            palette_addr = bg_palette * 4 + bg_pixel
         else:
-            # Both opaque - check priority
+            # Both opaque - check priority and sprite 0 hit
             if sprite_zero and x < 255:
-                self.sprite_zero_hit = True
-                self.status |= 0x40
+                self.status |= self.SPRITE_0_HIT
 
             if sprite_priority == 0:
-                color_index = self.palette_ram[sprite_palette * 4 + sprite_pixel]
+                palette_addr = 0x10 + sprite_palette * 4 + sprite_pixel
             else:
-                color_index = self.palette_ram[bg_palette * 4 + bg_pixel]
+                palette_addr = bg_palette * 4 + bg_pixel
 
-        # Convert to RGB and store
-        color_index = color_index & 0x3F
-        self.screen[y][x] = self.palette[color_index][:]
+        # Get final color from palette
+        color_index = self.palette_ram[palette_addr] & 0x3F
+        color = self.palette[color_index]
+        
+        # Store pixel in screen buffer
+        self.screen[y * 256 + x] = color
 
-        # Shift background shift registers
-        self.bg_shift_pattern_low <<= 1
-        self.bg_shift_pattern_high <<= 1
-        self.bg_shift_attrib_low <<= 1
-        self.bg_shift_attrib_high <<= 1
+    def render_background(self):
+        """Render background pixel - based on reference implementation"""
+        x = self.cycle - 1
+        fine_x = (self.x + x) % 8
 
-    def fetch_tile_data(self):
-        """Fetch tile data for background rendering"""
-        if not (self.mask & 0x08):  # Background rendering disabled
-            return
+        if not (self.mask & self.SHOW_BG_8) and x < 8:
+            return 0
 
-        cycle_in_tile = (self.cycle - 1) % 8
+        # Calculate tile address
+        tile_addr = 0x2000 | (self.v & 0xFFF)
+        
+        # Calculate attribute address  
+        attr_addr = 0x23C0 | (self.v & 0x0C00) | ((self.v >> 4) & 0x38) | ((self.v >> 2) & 0x07)
 
-        if cycle_in_tile == 0:
-            # Reload shift registers
-            self.bg_shift_pattern_low = (
-                self.bg_shift_pattern_low & 0xFF00
-            ) | self.bg_low_byte
-            self.bg_shift_pattern_high = (
-                self.bg_shift_pattern_high & 0xFF00
-            ) | self.bg_high_byte
+        # Get tile index from nametable
+        tile_index = self.read_vram(tile_addr)
+        
+        # Calculate pattern address
+        pattern_addr = (tile_index * 16 + ((self.v >> 12) & 0x7))
+        if self.ctrl & self.BG_TABLE:
+            pattern_addr |= 0x1000
 
-            attrib_low = 0xFF if self.at_byte & 1 else 0x00
-            attrib_high = 0xFF if self.at_byte & 2 else 0x00
-            self.bg_shift_attrib_low = (self.bg_shift_attrib_low & 0xFF00) | attrib_low
-            self.bg_shift_attrib_high = (
-                self.bg_shift_attrib_high & 0xFF00
-            ) | attrib_high
+        # Get pattern data
+        pattern_low = self.read_vram(pattern_addr) >> (7 - fine_x)
+        pattern_high = self.read_vram(pattern_addr + 8) >> (7 - fine_x)
+        
+        pixel = (pattern_low & 1) | ((pattern_high & 1) << 1)
 
-        if cycle_in_tile == 1:
-            # Fetch name table byte
-            self.nt_byte = self.read_vram(0x2000 | (self.v & 0x0FFF))
-        elif cycle_in_tile == 3:
-            # Fetch attribute table byte
-            addr = (
-                0x23C0
-                | (self.v & 0x0C00)
-                | ((self.v >> 4) & 0x38)
-                | ((self.v >> 2) & 0x07)
-            )
-            self.at_byte = self.read_vram(addr)
-            if (self.v >> 1) & 1:
-                self.at_byte >>= 2
-            if (self.v >> 6) & 1:
-                self.at_byte >>= 4
-            self.at_byte &= 3
-        elif cycle_in_tile == 5:
-            # Fetch pattern table low byte
-            fine_y = (self.v >> 12) & 7
-            table = (self.ctrl >> 4) & 1
-            addr = table * 0x1000 + self.nt_byte * 16 + fine_y
-            self.bg_low_byte = self.read_vram(addr)
-        elif cycle_in_tile == 7:
-            # Fetch pattern table high byte
-            fine_y = (self.v >> 12) & 7
-            table = (self.ctrl >> 4) & 1
-            addr = table * 0x1000 + self.nt_byte * 16 + fine_y + 8
-            self.bg_high_byte = self.read_vram(addr)
+        if not pixel:
+            return 0
 
-            # Increment horizontal position
-            if (self.v & 0x001F) == 31:
-                self.v &= 0xFFE0
-                self.v ^= 0x0400
+        # Get attribute data
+        attr = self.read_vram(attr_addr)
+        palette = (attr >> ((self.v >> 4) & 4 | self.v & 2)) & 0x3
+        
+        return pixel | (palette << 2)
+
+    def render_sprites(self, bg_pixel):
+        """Render sprite pixel - based on reference implementation"""
+        x = self.cycle - 1
+        y = self.scanline
+        
+        sprite_height = 16 if self.ctrl & self.LONG_SPRITE else 8
+        
+        for i in range(self.oam_cache_len):
+            sprite_idx = self.oam_cache[i]
+            sprite_x = self.oam[sprite_idx + 3]
+            
+            if x < sprite_x or x >= sprite_x + 8:
+                continue
+                
+            sprite_y = self.oam[sprite_idx] + 1
+            tile = self.oam[sprite_idx + 1]
+            attr = self.oam[sprite_idx + 2]
+            
+            x_offset = x - sprite_x
+            y_offset = y - sprite_y
+            
+            # Handle sprite flipping
+            if not (attr & 0x40):  # Horizontal flip
+                x_offset = 7 - x_offset
+            if attr & 0x80:  # Vertical flip
+                y_offset = sprite_height - 1 - y_offset
+                
+            # Calculate tile address
+            if sprite_height == 16:
+                # 8x16 sprites
+                table = tile & 1
+                tile = tile & 0xFE
+                if y_offset > 7:
+                    tile += 1
+                    y_offset -= 8
+                tile_addr = table * 0x1000 + tile * 16 + y_offset
             else:
-                self.v += 1
+                # 8x8 sprites
+                table = 1 if self.ctrl & self.SPRITE_TABLE else 0
+                tile_addr = table * 0x1000 + tile * 16 + y_offset
+                
+            # Get pattern data
+            pattern_low = (self.read_vram(tile_addr) >> x_offset) & 1
+            pattern_high = (self.read_vram(tile_addr + 8) >> x_offset) & 1
+            
+            pixel = pattern_low | (pattern_high << 1)
+            
+            if not pixel:
+                continue
+                
+            palette = attr & 0x3
+            priority = (attr >> 5) & 1
+            sprite_zero = (i == 0)
+            
+            # Check sprite 0 hit
+            if sprite_zero and bg_pixel and pixel and x < 255:
+                if not (self.status & self.SPRITE_0_HIT):
+                    self.status |= self.SPRITE_0_HIT
+                    
+            return pixel | (palette << 2) | (priority << 5) | (sprite_zero << 6)
+            
+        return 0
 
     def increment_y(self):
-        """Increment Y position in VRAM address"""
-        if (self.v & 0x7000) != 0x7000:
+        """Increment Y position in VRAM address - based on reference implementation"""
+        if (self.v & self.FINE_Y) != self.FINE_Y:
             self.v += 0x1000
         else:
-            self.v &= 0x8FFF
-            y = (self.v & 0x03E0) >> 5
-            if y == 29:
-                y = 0
-                self.v ^= 0x0800
-            elif y == 31:
-                y = 0
+            self.v &= ~self.FINE_Y
+            coarse_y = (self.v & self.COARSE_Y) >> 5
+            
+            if coarse_y == 29:
+                coarse_y = 0
+                self.v ^= 0x800  # Toggle vertical nametable
+            elif coarse_y == 31:
+                coarse_y = 0
             else:
-                y += 1
-            self.v = (self.v & 0xFC1F) | (y << 5)
+                coarse_y += 1
+                
+            self.v = (self.v & ~self.COARSE_Y) | (coarse_y << 5)
 
     def copy_x(self):
         """Copy X position from temporary to current VRAM address"""
-        self.v = (self.v & 0xFBE0) | (self.t & 0x041F)
+        self.v = (self.v & ~self.HORIZONTAL_BITS) | (self.t & self.HORIZONTAL_BITS)
 
     def copy_y(self):
         """Copy Y position from temporary to current VRAM address"""
-        self.v = (self.v & 0x841F) | (self.t & 0x7BE0)
+        self.v = (self.v & ~self.VERTICAL_BITS) | (self.t & self.VERTICAL_BITS)
 
     def evaluate_sprites(self):
-        """Evaluate sprites for current scanline"""
-        self.sprite_count = 0
-        sprite_height = 16 if self.ctrl & 0x20 else 8
-
+        """Evaluate sprites for current scanline - based on reference implementation"""
+        self.oam_cache = [0] * 8
+        self.oam_cache_len = 0
+        
+        sprite_height = 16 if self.ctrl & self.LONG_SPRITE else 8
+        
         for i in range(64):
-            oam_addr = i * 4
-            y = self.oam[oam_addr]
-
-            if self.scanline >= y and self.scanline < y + sprite_height:
-                if self.sprite_count < 8:
-                    # Copy sprite data
-                    self.sprite_positions[self.sprite_count] = self.oam[oam_addr + 3]
-                    self.sprite_indices[self.sprite_count] = self.oam[oam_addr + 2]
-
-                    # Fetch sprite pattern
-                    tile = self.oam[oam_addr + 1]
-                    attrib = self.oam[oam_addr + 2]
-                    sprite_y = self.scanline - y
-
-                    if attrib & 0x80:  # Vertical flip
-                        sprite_y = sprite_height - 1 - sprite_y
-
-                    if sprite_height == 16:
-                        table = tile & 1
-                        tile = tile & 0xFE
-                        if sprite_y > 7:
-                            tile += 1
-                            sprite_y -= 8
-                    else:
-                        table = (self.ctrl >> 3) & 1
-
-                    addr = table * 0x1000 + tile * 16 + sprite_y
-                    low = self.read_vram(addr)
-                    high = self.read_vram(addr + 8)
-
-                    # Combine pattern bytes
-                    pattern = 0
-                    for bit in range(8):
-                        pixel = ((high >> (7 - bit)) & 1) << 1 | (
-                            (low >> (7 - bit)) & 1
-                        )
-                        if attrib & 0x40:  # Horizontal flip
-                            pattern |= pixel << (bit * 2)
-                        else:
-                            pattern |= pixel << ((7 - bit) * 2)
-
-                    self.sprite_patterns[self.sprite_count] = pattern
-                    self.sprite_count += 1
+            sprite_y = self.oam[i * 4]
+            
+            # Check if sprite is on current scanline
+            diff = self.scanline - sprite_y
+            if 0 <= diff < sprite_height:
+                if self.oam_cache_len < 8:
+                    self.oam_cache[self.oam_cache_len] = i * 4
+                    self.oam_cache_len += 1
                 else:
                     # Sprite overflow
                     self.sprite_overflow = True
