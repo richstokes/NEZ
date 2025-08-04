@@ -1008,14 +1008,14 @@ class CPU:
 
     def execute_ldx(self, operand, addressing_mode):
         if addressing_mode == "immediate":
-            self.X = operand
+            self.X = self.memory.read(operand)
         else:
             self.X = self.memory.read(operand)
         self.set_zero_negative(self.X)
 
     def execute_ldy(self, operand, addressing_mode):
         if addressing_mode == "immediate":
-            self.Y = operand
+            self.Y = self.memory.read(operand)
         else:
             self.Y = self.memory.read(operand)
         self.set_zero_negative(self.Y)
@@ -1070,7 +1070,7 @@ class CPU:
 
     def execute_adc(self, operand, addressing_mode):
         if addressing_mode == "immediate":
-            value = operand
+            value = self.memory.read(operand)
         else:
             value = self.memory.read(operand)
 
@@ -1087,7 +1087,7 @@ class CPU:
 
     def execute_sbc(self, operand, addressing_mode):
         if addressing_mode == "immediate":
-            value = operand
+            value = self.memory.read(operand)
         else:
             value = self.memory.read(operand)
 
@@ -1104,7 +1104,7 @@ class CPU:
 
     def execute_and(self, operand, addressing_mode):
         if addressing_mode == "immediate":
-            value = operand
+            value = self.memory.read(operand)
         else:
             value = self.memory.read(operand)
 
@@ -1113,7 +1113,7 @@ class CPU:
 
     def execute_eor(self, operand, addressing_mode):
         if addressing_mode == "immediate":
-            value = operand
+            value = self.memory.read(operand)
         else:
             value = self.memory.read(operand)
 
@@ -1122,7 +1122,7 @@ class CPU:
 
     def execute_ora(self, operand, addressing_mode):
         if addressing_mode == "immediate":
-            value = operand
+            value = self.memory.read(operand)
         else:
             value = self.memory.read(operand)
 
@@ -1191,7 +1191,7 @@ class CPU:
 
     def execute_cmp(self, operand, addressing_mode):
         if addressing_mode == "immediate":
-            value = operand
+            value = self.memory.read(operand)
         else:
             value = self.memory.read(operand)
 
@@ -1201,7 +1201,7 @@ class CPU:
 
     def execute_cpx(self, operand, addressing_mode):
         if addressing_mode == "immediate":
-            value = operand
+            value = self.memory.read(operand)
         else:
             value = self.memory.read(operand)
 
@@ -1211,7 +1211,7 @@ class CPU:
 
     def execute_cpy(self, operand, addressing_mode):
         if addressing_mode == "immediate":
-            value = operand
+            value = self.memory.read(operand)
         else:
             value = self.memory.read(operand)
 
@@ -1365,7 +1365,7 @@ class CPU:
     def execute_lax(self, operand, addressing_mode):
         """Load Accumulator and X - Load the same value into both A and X"""
         if addressing_mode == "immediate":
-            value = operand
+            value = self.memory.read(operand)
         else:
             value = self.memory.read(operand)
 
