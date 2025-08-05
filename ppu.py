@@ -211,9 +211,13 @@ class PPU:
         if addr == 0x2002:  # PPUSTATUS
             result = self.status
             debug_print(
-                f"PPU: Reading PPUSTATUS=0x{result:02X}, clearing VBlank flag, frame={self.frame}"
+                f"PPU: Reading PPUSTATUS=0x{result:02X} at scanline={self.scanline}, cycle={self.cycle}, clearing VBlank and sprite overflow flags, frame={self.frame}"
             )
-            self.status &= 0x7F  # Clear VBlank flag
+
+            # FINAL FIX: Clear VBlank flag (0x80) AND sprite overflow flag (0x20) on read
+            # According to NES specification, both flags are cleared when PPUSTATUS is read
+            # Mario was stuck because sprite overflow flag (0x20) persisted across reads
+            self.status &= 0x5F  # Clear VBlank (0x80) and sprite overflow (0x20) flags
             self.w = 0  # Reset write toggle
             return result
         elif addr == 0x2004:  # OAMDATA
@@ -450,6 +454,7 @@ class PPU:
                 self.status &= ~(self.V_BLANK | self.SPRITE_0_HIT)
                 self.sprite_zero_hit = False
                 # Note: sprite_overflow flag is NOT cleared during pre-render scanline
+                # It's only cleared when PPUSTATUS is read
 
             # Copy Y position from temp register during pre-render
             elif 280 <= self.cycle <= 304 and (
@@ -714,7 +719,6 @@ class PPU:
         # Clear sprite cache
         self.oam_cache = [0] * 8
         self.oam_cache_len = 0
-        self.sprite_overflow = False
 
         sprite_height = 16 if self.ctrl & self.LONG_SPRITE else 8
         current_scanline = self.scanline
@@ -731,9 +735,12 @@ class PPU:
                     self.oam_cache[sprites_found] = i * 4
                     sprites_found += 1
                 else:
-                    # Sprite overflow - set flag
-                    self.sprite_overflow = True
-                    self.status |= 0x20  # Set sprite overflow flag
+                    # Sprite overflow - set flag only if not already set this frame
+                    if not (
+                        self.status & 0x20
+                    ):  # Check if sprite overflow flag not already set
+                        self.sprite_overflow = True
+                        self.status |= 0x20  # Set sprite overflow flag
                     break
 
         self.oam_cache_len = sprites_found
