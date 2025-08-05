@@ -214,7 +214,21 @@ class Cartridge:
         self.has_trainer = False
         self.four_screen = False
 
+        # Nametable mapping for mirroring like reference implementation
+        # Maps nametable index to VRAM offset
+        self.name_table_map = [0, 0, 0, 0]  # Will be set based on mirroring
+
         self.load_rom()
+        self.set_mirroring()  # Set up nametable mapping
+
+    def set_mirroring(self):
+        """Set up nametable mapping based on mirroring type like reference implementation"""
+        if self.mirroring == 1:  # Vertical mirroring
+            # Reference: set_mapping(mapper, 0, 0x400, 0, 0x400)
+            self.name_table_map = [0, 0x400, 0, 0x400]
+        else:  # Horizontal mirroring
+            # Reference: set_mapping(mapper, 0, 0, 0x400, 0x400)
+            self.name_table_map = [0, 0, 0x400, 0x400]
 
     def load_rom(self):
         """Load ROM file"""

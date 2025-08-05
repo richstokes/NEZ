@@ -192,11 +192,13 @@ class NEZEmulator:
     def update_texture(self):
         """Update SDL texture with NES screen data - matching reference implementation"""
         screen = self.nes.get_screen()
-        
+
         # Debug: Check if screen has non-zero pixels
         non_zero_pixels = sum(1 for pixel in screen if pixel != 0)
         if non_zero_pixels > 0:
-            debug_print(f"Screen has {non_zero_pixels} non-zero pixels, first few: {screen[:10]}")
+            debug_print(
+                f"Screen has {non_zero_pixels} non-zero pixels, first few: {screen[:10]}"
+            )
 
         # Convert screen pixels to bytes array for SDL_UpdateTexture
         # SDL expects ABGR8888 format: A, B, G, R bytes in sequence

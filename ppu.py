@@ -10,7 +10,7 @@ class PPU:
     def __init__(self, memory):
         self.memory = memory
 
-        # PPU Registers
+        # PPU registers
         self.ctrl = 0  # $2000 - PPUCTRL
         self.mask = 0  # $2001 - PPUMASK
         self.status = 0  # $2002 - PPUSTATUS
@@ -210,7 +210,9 @@ class PPU:
         """Read from PPU register"""
         if addr == 0x2002:  # PPUSTATUS
             result = self.status
-            debug_print(f"PPU: Reading PPUSTATUS=0x{result:02X}, clearing VBlank flag")
+            debug_print(
+                f"PPU: Reading PPUSTATUS=0x{result:02X}, clearing VBlank flag, frame={self.frame}"
+            )
             self.status &= 0x7F  # Clear VBlank flag
             self.w = 0  # Reset write toggle
             return result
@@ -241,10 +243,23 @@ class PPU:
             self.ctrl = value
             self.t = (self.t & 0xF3FF) | ((value & 0x03) << 10)
         elif addr == 0x2001:  # PPUMASK
+            old_mask = self.mask
             debug_print(
                 f"PPU: Writing mask register: old={self.mask:02x}, new={value:02x}"
             )
             self.mask = value
+            # Debug when rendering is enabled/disabled
+            if (old_mask & (self.SHOW_BG | self.SHOW_SPRITE)) != (
+                value & (self.SHOW_BG | self.SHOW_SPRITE)
+            ):
+                if value & (self.SHOW_BG | self.SHOW_SPRITE):
+                    debug_print(
+                        f"PPU: RENDERING ENABLED at frame {self.frame}, mask=0x{value:02X}"
+                    )
+                else:
+                    debug_print(
+                        f"PPU: RENDERING DISABLED at frame {self.frame}, mask=0x{value:02X}"
+                    )
         elif addr == 0x2003:  # OAMADDR
             self.oam_addr = value
         elif addr == 0x2004:  # OAMDATA
@@ -277,20 +292,34 @@ class PPU:
                 self.v = (self.v + 1) & 0x7FFF
 
     def read_vram(self, addr):
-        """Read from PPU VRAM"""
+        """Read from PPU VRAM - matches reference implementation"""
         addr = addr & 0x3FFF
 
+        # Update bus like reference implementation
+        self.bus = addr
+
         if addr < 0x2000:
-            # Pattern tables - handled by cartridge
-            return self.memory.ppu_read(addr)
+            # Pattern tables - handled by cartridge (CHR ROM/RAM)
+            self.bus = self.memory.ppu_read(addr)
+            return self.bus
         elif addr < 0x3F00:
-            # Name tables
-            # Handle mirroring
+            # Name tables - use proper mapping like reference implementation
+            # Reference: address = (address & 0xefff) - 0x2000;
+            # Reference: ppu->V_RAM[ppu->mapper->name_table_map[address / 0x400] + (address & 0x3ff)]
             addr = (addr & 0xEFFF) - 0x2000
-            # Simple horizontal mirroring for now
-            if addr >= 0x800:
-                addr = addr % 0x800
-            return self.vram[0x2000 + addr]
+            nametable_index = addr // 0x400  # Which nametable (0-3)
+            offset_in_table = addr & 0x3FF  # Offset within that nametable
+
+            # Get mapping from cartridge
+            if hasattr(self.memory, "cartridge") and self.memory.cartridge:
+                mapped_offset = self.memory.cartridge.name_table_map[nametable_index]
+                self.bus = self.vram[mapped_offset + offset_in_table]
+            else:
+                # Fallback to simple horizontal mirroring
+                if addr >= 0x800:
+                    addr = addr % 0x800
+                self.bus = self.vram[addr]
+            return self.bus
         else:
             # Palette RAM
             addr = (addr - 0x3F00) % 0x20
@@ -308,19 +337,36 @@ class PPU:
             return self.palette_ram[addr]
 
     def write_vram(self, addr, value):
-        """Write to PPU VRAM"""
+        """Write to PPU VRAM - matches reference implementation"""
         addr = addr & 0x3FFF
 
+        # Update bus like reference implementation
+        self.bus = value
+
         if addr < 0x2000:
-            # Pattern tables - handled by cartridge
+            # Pattern tables - handled by cartridge (CHR ROM/RAM)
             self.memory.ppu_write(addr, value)
         elif addr < 0x3F00:
-            # Name tables
+            # Name tables - use proper mapping like reference implementation
             addr = (addr & 0xEFFF) - 0x2000
-            # Simple horizontal mirroring for now
-            if addr >= 0x800:
-                addr = addr % 0x800
-            self.vram[0x2000 + addr] = value
+            nametable_index = addr // 0x400  # Which nametable (0-3)
+            offset_in_table = addr & 0x3FF  # Offset within that nametable
+
+            # Debug VRAM writes during early frames
+            if self.frame >= 0 and self.frame < 50 and value != 0:
+                debug_print(
+                    f"VRAM Write: addr=0x{addr + 0x2000:04X}, nt={nametable_index}, offset=0x{offset_in_table:03X}, value=0x{value:02X}, frame={self.frame}"
+                )
+
+            # Get mapping from cartridge
+            if hasattr(self.memory, "cartridge") and self.memory.cartridge:
+                mapped_offset = self.memory.cartridge.name_table_map[nametable_index]
+                self.vram[mapped_offset + offset_in_table] = value
+            else:
+                # Fallback to simple horizontal mirroring
+                if addr >= 0x800:
+                    addr = addr % 0x800
+                self.vram[addr] = value
         else:
             # Palette RAM
             addr = (addr - 0x3F00) % 0x20
@@ -400,8 +446,8 @@ class PPU:
         # Pre-render scanline (261)
         else:
             if self.cycle == 1:
-                # Clear VBlank and sprite 0 hit
-                self.status &= ~(self.V_BLANK | self.SPRITE_0_HIT)
+                # Clear VBlank, sprite 0 hit, and sprite overflow flags
+                self.status &= ~(self.V_BLANK | self.SPRITE_0_HIT | 0x20)
                 self.sprite_zero_hit = False
                 self.sprite_overflow = False
 
@@ -484,6 +530,12 @@ class PPU:
                     sprite_priority = (sprite_info >> 5) & 1
                     sprite_zero = (sprite_info >> 6) & 1
 
+        # Debug output for first few pixels to see what's being rendered
+        if self.frame >= 32 and self.frame < 34 and y < 3 and x < 3:
+            debug_print(
+                f"Pixel ({x},{y}): bg={bg_pixel}, sprite={sprite_pixel}, mask=0x{self.mask:02x}"
+            )
+
         # Determine final pixel color
         palette_addr = 0
 
@@ -542,6 +594,12 @@ class PPU:
         pattern_high = self.read_vram(pattern_addr + 8) >> (7 - fine_x)
 
         pixel = (pattern_low & 1) | ((pattern_high & 1) << 1)
+
+        # Debug output for first few frames and pixels
+        if self.frame >= 32 and self.frame < 34 and self.scanline < 3 and x < 8:
+            debug_print(
+                f"BG({x},{self.scanline}): tile_addr=0x{tile_addr:04X}, tile_idx={tile_index}, pattern_addr=0x{pattern_addr:04X}, pattern_low={self.read_vram(pattern_addr)}, pattern_high={self.read_vram(pattern_addr + 8)}, pixel={pixel}"
+            )
 
         if not pixel:
             return 0
