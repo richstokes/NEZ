@@ -446,10 +446,10 @@ class PPU:
         # Pre-render scanline (261)
         else:
             if self.cycle == 1:
-                # Clear VBlank, sprite 0 hit, and sprite overflow flags
-                self.status &= ~(self.V_BLANK | self.SPRITE_0_HIT | 0x20)
+                # Clear VBlank and sprite 0 hit flags (NOT sprite overflow)
+                self.status &= ~(self.V_BLANK | self.SPRITE_0_HIT)
                 self.sprite_zero_hit = False
-                self.sprite_overflow = False
+                # Note: sprite_overflow flag is NOT cleared during pre-render scanline
 
             # Copy Y position from temp register during pre-render
             elif 280 <= self.cycle <= 304 and (
