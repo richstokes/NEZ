@@ -816,12 +816,18 @@ class CPU:
             if self.interrupt_pending == "NMI" or (
                 self.interrupt_pending == "IRQ" and self.I == 0
             ):
+                debug_print(
+                    f"CPU: Starting interrupt handling for {self.interrupt_pending}, PC=0x{self.PC:04X}"
+                )
                 self.interrupt_state = 2  # Mark interrupt pending
                 self.cycles = 6  # Interrupt handling takes 7 cycles (this is cycle 1)
                 return 1
 
         # If interrupt is pending and we've counted down, handle it
         if self.interrupt_state == 2 and self.cycles == 0:
+            debug_print(
+                f"CPU: Executing interrupt handler for {self.interrupt_pending}"
+            )
             self._handle_interrupt()
             self.interrupt_state = 0
             return 1
@@ -1088,6 +1094,7 @@ class CPU:
 
     def trigger_interrupt(self, interrupt_type):
         """Trigger an interrupt (NMI, IRQ, RST)"""
+        debug_print(f"CPU: Interrupt triggered: {interrupt_type}")
         self.interrupt_pending = interrupt_type
 
     def add_dma_cycles(self, cycles):

@@ -210,6 +210,7 @@ class PPU:
         """Read from PPU register"""
         if addr == 0x2002:  # PPUSTATUS
             result = self.status
+            debug_print(f"PPU: Reading PPUSTATUS=0x{result:02X}, clearing VBlank flag")
             self.status &= 0x7F  # Clear VBlank flag
             self.w = 0  # Reset write toggle
             return result
@@ -240,6 +241,9 @@ class PPU:
             self.ctrl = value
             self.t = (self.t & 0xF3FF) | ((value & 0x03) << 10)
         elif addr == 0x2001:  # PPUMASK
+            debug_print(
+                f"PPU: Writing mask register: old={self.mask:02x}, new={value:02x}"
+            )
             self.mask = value
         elif addr == 0x2003:  # OAMADDR
             self.oam_addr = value
@@ -370,7 +374,28 @@ class PPU:
         # VBlank scanlines (241-260)
         elif 241 <= self.scanline <= 260:
             if self.scanline == 241 and self.cycle == 1:
+                debug_print(
+                    f"PPU: Setting VBlank flag at scanline={self.scanline}, cycle={self.cycle}"
+                )
+                # Set VBlank flag and immediately trigger NMI if enabled
+                old_status = self.status
                 self.status |= self.V_BLANK  # Set VBlank flag
+
+                # Check for VBlank NMI transition immediately (before CPU can read status)
+                if (self.status & 0x80) and not (old_status & 0x80):
+                    if self.ctrl & 0x80:  # NMI enabled
+                        debug_print(
+                            f"PPU: VBlank NMI triggered immediately! CTRL={self.ctrl:02x}"
+                        )
+                        # Trigger NMI through the memory system to the NES
+                        if hasattr(self.memory, "nes") and hasattr(
+                            self.memory.nes, "trigger_nmi"
+                        ):
+                            self.memory.nes.trigger_nmi()
+                        else:
+                            debug_print(
+                                "PPU: Warning - cannot trigger NMI, no NES reference found"
+                            )
 
         # Pre-render scanline (261)
         else:
@@ -400,6 +425,14 @@ class PPU:
             ):
                 self.cycle += 1
 
+            # Signal frame completion at END_DOT - like reference implementation
+            if self.cycle >= self.END_DOT:
+                debug_print(
+                    f"PPU: Setting render=True at scanline={self.scanline}, cycle={self.cycle}, frame={self.frame}"
+                )
+                self.render = True
+                self.frame += 1
+
         # Increment dots and scanlines (match reference implementation exactly)
         self.cycle += 1
         if self.cycle >= self.DOTS_PER_SCANLINE:
@@ -408,9 +441,6 @@ class PPU:
             if self.scanline >= self.SCANLINES_PER_FRAME:
                 self.scanline = 0
                 self.odd_frame = not self.odd_frame
-                # Signal frame completion when we wrap back to scanline 0
-                self.render = True
-                self.frame += 1
 
     def _increment_scanline_cycle(self):
         """Optimized scanline/cycle increment - DEPRECATED"""

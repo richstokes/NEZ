@@ -41,6 +41,10 @@ class Memory:
         """Set the APU reference"""
         self.apu = apu
 
+    def set_nes(self, nes):
+        """Set the NES reference"""
+        self.nes = nes
+
     def read(self, addr):
         """Read from CPU memory"""
         addr = addr & 0xFFFF
