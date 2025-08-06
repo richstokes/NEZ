@@ -268,8 +268,11 @@ class NEZEmulator:
         while self.running:
             frame_start = time.time()
 
-            # Handle events
+            # Handle events BEFORE running the frame
             self.handle_events()
+
+            # Update controller state to NES before frame
+            self.nes.set_controller_input(1, self.controller_state)
 
             # Run emulator for one frame - optimized
             self.nes.step_frame()
@@ -277,6 +280,10 @@ class NEZEmulator:
             # Update display only when necessary
             self.update_texture()
             self.render()
+
+            # Process any pending audio samples
+            if hasattr(self.nes.apu, 'audio_buffer') and len(self.nes.apu.audio_buffer) > 0:
+                self.nes.apu._queue_audio()
 
             frame_count += 1
 

@@ -75,15 +75,16 @@ class Memory:
             return self.bus
         elif addr == 0x4016:
             # Controller 1 - NES standard controller read
-            if self.controller1_index > 7:
+            if self.strobe:
+                # When strobe is high, always return first bit (A button)
+                result = self.controller1 & 1
+            elif self.controller1_index > 7:
                 # Return 1 for reads beyond 8 buttons (open bus)
                 result = 1
             else:
-                # Return the current bit
+                # Return the current bit from shift register
                 result = (self.controller1_shift >> self.controller1_index) & 1
-                if not self.strobe:
-                    # Only advance index if not strobing
-                    self.controller1_index += 1
+                self.controller1_index += 1
 
             # Preserve upper bits from open bus (bit 7-5) and mix in result
             self.bus = (
@@ -92,12 +93,14 @@ class Memory:
             return self.bus
         elif addr == 0x4017:
             # Controller 2 - same logic as controller 1
-            if self.controller2_index > 7:
+            if self.strobe:
+                # When strobe is high, always return first bit (A button)
+                result = self.controller2 & 1
+            elif self.controller2_index > 7:
                 result = 1
             else:
                 result = (self.controller2_shift >> self.controller2_index) & 1
-                if not self.strobe:
-                    self.controller2_index += 1
+                self.controller2_index += 1
 
             # Preserve upper bits from open bus
             self.bus = (self.bus & 0xE0) | (result & 0x01) | 0x40
@@ -153,12 +156,13 @@ class Memory:
             old_strobe = self.strobe
             self.strobe = value & 1
 
-            if self.strobe:
-                # Strobe high - reset controller read indices and latch current state
-                self.controller1_index = 0
-                self.controller2_index = 0
+            # When strobe goes from high to low, latch the current state
+            if old_strobe and not self.strobe:
+                # Strobe falling edge - latch current controller state
                 self.controller1_shift = self.controller1
                 self.controller2_shift = self.controller2
+                self.controller1_index = 0
+                self.controller2_index = 0
 
             # Update bus with mixed old/new values as per hardware
             self.bus = (old_bus & 0xE0) | (value & 0x1F)

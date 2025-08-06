@@ -764,8 +764,13 @@ class APU:
         self.pulse2.clock_timer()
         self.triangle.clock_timer()
 
-        # Clock noise and DMC every other cycle - use bit mask for speed
-        if not (self.nes.cpu.total_cycles & 1):
+        # Clock noise and DMC every other cycle - use CPU cycles for tracking
+        if hasattr(self.nes, 'cpu_cycles'):
+            if not (self.nes.cpu_cycles & 1):
+                self.noise.clock_timer()
+                self.dmc.clock_timer()
+        else:
+            # Fallback - always clock
             self.noise.clock_timer()
             self.dmc.clock_timer()
 

@@ -98,10 +98,8 @@ class NES:
         # Reset the render flag at the start of each frame
         self.ppu.render = False
 
-        # Clear frame-state variables to ensure clean start
-        # This ensures proper timing between CPU and PPU
-        self.nmi_pending = False
-        self.nmi_delay = 0
+        # Don't clear NMI state - let it be handled naturally
+        # The NMI should persist until handled by the CPU
 
         # Track the last PPU state to detect oscillations
         last_scanline = -1
