@@ -337,7 +337,7 @@ class PPU:
 
         # Update bus like reference implementation
         self.bus = addr
-        
+
         # Special handling for problematic addresses that cause loops in sprite rendering
         if self.frame >= 32 and addr >= 0x1240 and addr <= 0x124F:
             # When rendering is enabled and we're accessing sprite pattern data,
@@ -348,7 +348,7 @@ class PPU:
                     return 0x55  # Alternating pattern
                 else:  # High byte of pattern
                     return 0xAA
-        
+
         if addr < 0x2000:
             # Pattern tables - handled by cartridge (CHR ROM/RAM)
             self.bus = self.memory.ppu_read(addr)
@@ -718,14 +718,19 @@ class PPU:
                 debug_print(
                     f"DEBUG: Handling problematic address range 0x{tile_addr:04X} for sprite at ({sprite_x},{sprite_y}), tile={tile}, attr=0x{attr:02X}, x_offset={x_offset}, y_offset={y_offset}, frame={self.frame}"
                 )
-                
+
                 # Use fixed pattern data to avoid repeated CHR ROM reads
                 # This creates a visible sprite instead of getting stuck
                 pattern_low = 0
                 pattern_high = 0
-                
+
                 # Special case for Mario's sprites
-                if sprite_y >= 24 and sprite_y <= 40 and sprite_x >= 80 and sprite_x <= 96:
+                if (
+                    sprite_y >= 24
+                    and sprite_y <= 40
+                    and sprite_x >= 80
+                    and sprite_x <= 96
+                ):
                     # This is likely the Mario sprite - use a recognizable pattern
                     pattern_low = 0x55  # Alternating pattern for visibility
                     pattern_high = 0xAA
@@ -733,22 +738,17 @@ class PPU:
                     # Use a simpler pattern for other sprites
                     pattern_low = 0x0F  # Some basic pattern
                     pattern_high = 0xF0
-                
+
                 # Calculate pixel based on x_offset
                 pixel = ((pattern_low >> x_offset) & 1) | (
                     ((pattern_high >> x_offset) & 1) << 1
                 )
-                
+
                 if pixel:
                     palette = attr & 0x3
                     priority = (attr >> 5) & 1
                     sprite_zero = j == 0
-                    return (
-                        pixel
-                        | (palette << 2)
-                        | (priority << 5)
-                        | (sprite_zero << 6)
-                    )
+                    return pixel | (palette << 2) | (priority << 5) | (sprite_zero << 6)
                 continue
 
             # Get pattern data
