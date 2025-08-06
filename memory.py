@@ -13,7 +13,7 @@ class Memory:
         self.cpu = None  # CPU reference (for NMI)
         self.apu = None  # APU reference
 
-        # Open bus value - important for accurate memory behavior
+        # Open bus state
         self.bus = 0
 
         # Controller state
@@ -24,6 +24,29 @@ class Memory:
         self.controller1_index = 0
         self.controller2_index = 0
         self.strobe = 0
+
+    def ppu_read(self, addr):
+        """Read from cartridge (PPU side)"""
+        if addr < 0x2000:
+            # Pattern tables (CHR ROM/RAM) - NROM mapper 0 implementation
+            # For NROM, 8KB CHR ROM is directly accessible at 0x0000-0x1FFF
+            if self.mapper == 0:  # NROM
+                # NROM CHR ROM mapping: 8KB CHR ROM spans full 8KB pattern table space
+                # If CHR ROM is 8KB, it fills the entire 0x0000-0x1FFF range
+                # If CHR ROM is 4KB, it gets mirrored to fill 0x0000-0x1FFF
+                chr_addr = addr % len(
+                    self.chr_rom
+                )  # Handle mirroring for smaller CHR ROM
+                if chr_addr < len(self.chr_rom):
+                    value = self.chr_rom[chr_addr]
+                    # Debug CHR ROM data for early frames
+                    if addr >= 0x1240 and addr <= 0x1250:
+                        print(
+                            f"CHR ROM: addr=0x{addr:04X}, value=0x{value:02X}, chr_rom_size={len(self.chr_rom)}"
+                        )
+                    return value
+                else:
+                    return 0  # Return 0 for unmapped areas
 
     def set_cartridge(self, cartridge):
         """Set the cartridge reference"""
@@ -263,7 +286,23 @@ class Cartridge:
             # Read CHR ROM
             if self.chr_rom_size > 0:
                 chr_size = self.chr_rom_size * 8192
-                self.chr_rom = list(f.read(chr_size))
+                print(
+                    f"Reading CHR ROM: {chr_size} bytes from file position {f.tell()}"
+                )
+                chr_data = f.read(chr_size)
+                print(f"Actually read: {len(chr_data)} bytes")
+                self.chr_rom = list(chr_data)
+                # Debug first few bytes of CHR ROM
+                if len(self.chr_rom) >= 16:
+                    print(
+                        f"First 16 CHR ROM bytes: {[hex(x) for x in self.chr_rom[:16]]}"
+                    )
+                # Debug tile 36 data specifically
+                tile_36_start = 36 * 16  # tile 36 at address 0x240
+                if len(self.chr_rom) > tile_36_start + 16:
+                    print(
+                        f"Tile 36 CHR data (0x{tile_36_start:03X}-0x{tile_36_start+15:03X}): {[hex(x) for x in self.chr_rom[tile_36_start:tile_36_start+16]]}"
+                    )
             else:
                 # CHR RAM
                 self.chr_rom = [0] * 8192
@@ -273,6 +312,42 @@ class Cartridge:
         print(f"CHR ROM: {self.chr_rom_size * 8}KB")
         print(f"Mapper: {self.mapper}")
         print(f"Mirroring: {'Vertical' if self.mirroring else 'Horizontal'}")
+
+        # Debug CHR ROM data - check various locations
+        if len(self.chr_rom) >= 0x1250:
+            print(
+                f"CHR ROM sample data at 0x1240-0x124F: {[hex(x) for x in self.chr_rom[0x1240:0x1250]]}"
+            )
+
+            # Let's also check raw data to see if this is pattern table mirroring
+            print(f"CHR ROM actual size: {len(self.chr_rom)} bytes")
+            print(f"CHR ROM[0x1240] = 0x{self.chr_rom[0x1240]:02X}")
+            print(f"CHR ROM[0x1247] = 0x{self.chr_rom[0x1247]:02X}")
+            print(f"CHR ROM[0x124F] = 0x{self.chr_rom[0x124F]:02X}")
+
+            # Also check if there's data in pattern table 0 at tile 36
+            tile_36_pt0 = 36 * 16  # 0x240
+            if len(self.chr_rom) > tile_36_pt0 + 16:
+                print(
+                    f"Pattern table 0, tile 36 (0x{tile_36_pt0:03X}-0x{tile_36_pt0+15:03X}): {[hex(x) for x in self.chr_rom[tile_36_pt0:tile_36_pt0+16]]}"
+                )
+
+            # Check if there's any non-zero data in the first few KB
+            non_zero_count = sum(1 for x in self.chr_rom[:0x1000] if x != 0)
+            print(f"Non-zero bytes in first 4KB (pattern table 0): {non_zero_count}")
+
+            non_zero_count_pt1 = sum(1 for x in self.chr_rom[0x1000:0x2000] if x != 0)
+            print(
+                f"Non-zero bytes in second 4KB (pattern table 1): {non_zero_count_pt1}"
+            )
+
+            # Show first few non-zero bytes and their addresses
+            for i, byte in enumerate(self.chr_rom[:0x100]):
+                if byte != 0:
+                    print(f"First non-zero byte at 0x{i:04X}: 0x{byte:02X}")
+                    break
+        else:
+            print(f"CHR ROM too small: size={len(self.chr_rom)}")
 
     def cpu_read(self, addr):
         """Read from cartridge (CPU side)"""
@@ -316,9 +391,28 @@ class Cartridge:
     def ppu_read(self, addr):
         """Read from cartridge (PPU side)"""
         if addr < 0x2000:
-            # Pattern tables (CHR ROM/RAM)
-            if addr < len(self.chr_rom):
-                return self.chr_rom[addr]
+            # Pattern tables (CHR ROM/RAM) - NROM mapper 0 implementation
+            if self.mapper == 0:  # NROM
+                if len(self.chr_rom) > 0:
+                    # For NROM, CHR ROM should be accessible across full 8KB range (0x0000-0x1FFF)
+                    # If CHR ROM is smaller than 8KB, it should be mirrored
+                    chr_addr = addr % len(self.chr_rom)
+                    value = self.chr_rom[chr_addr]
+                    # Debug CHR ROM data for early frames
+                    if addr >= 0x1240 and addr <= 0x1250:
+                        print(
+                            f"CHR ROM: addr=0x{addr:04X}, chr_addr=0x{chr_addr:04X}, value=0x{value:02X}, chr_rom_size={len(self.chr_rom)}"
+                        )
+                    return value
+                else:
+                    print(
+                        f"CHR ROM empty: addr=0x{addr:04X}, chr_rom_size={len(self.chr_rom)}"
+                    )
+                    return 0
+            else:
+                # Other mappers would handle bank switching here
+                if addr < len(self.chr_rom):
+                    return self.chr_rom[addr]
         return 0
 
     def ppu_write(self, addr, value):

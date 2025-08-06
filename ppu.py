@@ -26,8 +26,10 @@ class PPU:
         self.x = 0  # Fine X scroll (3 bits)
         self.w = 0  # Write toggle (1 bit)
 
-        # PPU Memory
-        self.vram = [0] * 0x4000  # Pattern tables, name tables, etc.
+        # PPU Memory - match reference implementation exactly
+        self.vram = [
+            0
+        ] * 0x1000  # VRAM: 4KB for nametables only (like reference V_RAM[0x1000])
         self.palette_ram = [0] * 0x20  # Palette memory
         self.oam = [0] * 0x100  # Object Attribute Memory (sprites)
 
@@ -210,9 +212,15 @@ class PPU:
         """Read from PPU register"""
         if addr == 0x2002:  # PPUSTATUS
             result = self.status
-            debug_print(
-                f"PPU: Reading PPUSTATUS=0x{result:02X} at scanline={self.scanline}, cycle={self.cycle}, clearing VBlank and sprite overflow flags, frame={self.frame}"
-            )
+            # Only debug VBlank reads and sprite 0 hit reads for clarity
+            if result & 0x80:  # VBlank flag set
+                debug_print(
+                    f"PPU: Reading PPUSTATUS=0x{result:02X} (VBlank) at scanline={self.scanline}, cycle={self.cycle}, frame={self.frame}"
+                )
+            elif result & 0x40:  # Sprite 0 hit flag set
+                debug_print(
+                    f"PPU: Reading PPUSTATUS=0x{result:02X} (Sprite0Hit) at scanline={self.scanline}, cycle={self.cycle}, frame={self.frame}"
+                )
 
             # FINAL FIX: Clear VBlank flag (0x80) AND sprite overflow flag (0x20) on read
             # According to NES specification, both flags are cleared when PPUSTATUS is read
@@ -244,8 +252,19 @@ class PPU:
         self.bus = value
 
         if addr == 0x2000:  # PPUCTRL
+            old_ctrl = self.ctrl
             self.ctrl = value
             self.t = (self.t & 0xF3FF) | ((value & 0x03) << 10)
+            # Debug PPUCTRL writes, especially background pattern table selection
+            if (old_ctrl & self.BG_TABLE) != (value & self.BG_TABLE):
+                bg_table = (
+                    "1 (0x1000-0x1FFF)"
+                    if (value & self.BG_TABLE)
+                    else "0 (0x0000-0x0FFF)"
+                )
+                debug_print(
+                    f"PPU: PPUCTRL background pattern table changed to {bg_table}, ctrl=0x{value:02X}, frame={self.frame}"
+                )
         elif addr == 0x2001:  # PPUMASK
             old_mask = self.mask
             debug_print(
@@ -268,6 +287,12 @@ class PPU:
             self.oam_addr = value
         elif addr == 0x2004:  # OAMDATA
             self.oam[self.oam_addr] = value
+            # Debug sprite 0 writes during early frames
+            if self.oam_addr <= 3 and self.frame >= 0 and self.frame < 50:
+                sprite_part = ["Y", "Tile", "Attr", "X"][self.oam_addr]
+                debug_print(
+                    f"PPU: Sprite 0 {sprite_part}={value} written to OAM[{self.oam_addr}], frame={self.frame}"
+                )
             self.oam_addr = (self.oam_addr + 1) & 0xFF
         elif addr == 0x2005:  # PPUSCROLL
             if self.w == 0:
@@ -305,6 +330,16 @@ class PPU:
         if addr < 0x2000:
             # Pattern tables - handled by cartridge (CHR ROM/RAM)
             self.bus = self.memory.ppu_read(addr)
+            # Debug CHR ROM reads for tile 36 (0x24) during early frames
+            if (
+                self.frame >= 32
+                and self.frame < 34
+                and addr >= 0x1240
+                and addr <= 0x1250
+            ):
+                debug_print(
+                    f"CHR ROM read: addr=0x{addr:04X}, data=0x{self.bus:02X}, frame={self.frame}"
+                )
             return self.bus
         elif addr < 0x3F00:
             # Name tables - use proper mapping like reference implementation
@@ -425,11 +460,14 @@ class PPU:
         elif 241 <= self.scanline <= 260:
             if self.scanline == 241 and self.cycle == 1:
                 debug_print(
-                    f"PPU: Setting VBlank flag at scanline={self.scanline}, cycle={self.cycle}"
+                    f"PPU: Setting VBlank flag at scanline={self.scanline}, cycle={self.cycle}, frame={self.frame}"
                 )
                 # Set VBlank flag and immediately trigger NMI if enabled
                 old_status = self.status
                 self.status |= self.V_BLANK  # Set VBlank flag
+                debug_print(
+                    f"PPU: VBlank flag set, status now=0x{self.status:02X}, frame={self.frame}"
+                )
 
                 # Check for VBlank NMI transition immediately (before CPU can read status)
                 if (self.status & 0x80) and not (old_status & 0x80):
@@ -451,8 +489,12 @@ class PPU:
         else:
             if self.cycle == 1:
                 # Clear VBlank and sprite 0 hit flags (NOT sprite overflow)
+                old_status = self.status
                 self.status &= ~(self.V_BLANK | self.SPRITE_0_HIT)
                 self.sprite_zero_hit = False
+                debug_print(
+                    f"PPU: Pre-render clearing VBlank flag, old_status=0x{old_status:02X}, new_status=0x{self.status:02X}, frame={self.frame}"
+                )
                 # Note: sprite_overflow flag is NOT cleared during pre-render scanline
                 # It's only cleared when PPUSTATUS is read
 
@@ -571,49 +613,35 @@ class PPU:
         self.screen[y * 256 + x] = color
 
     def render_background(self):
-        """Render background pixel - based on reference implementation"""
+        """Render background pixel - exactly matching reference implementation"""
         x = self.cycle - 1
         fine_x = (self.x + x) % 8
 
         if not (self.mask & self.SHOW_BG_8) and x < 8:
             return 0
 
-        # Calculate tile address
+        # Calculate addresses - exactly like reference
         tile_addr = 0x2000 | (self.v & 0xFFF)
-
-        # Calculate attribute address
         attr_addr = (
             0x23C0 | (self.v & 0x0C00) | ((self.v >> 4) & 0x38) | ((self.v >> 2) & 0x07)
         )
 
-        # Get tile index from nametable
+        # Get tile index and calculate pattern address - exactly like reference
         tile_index = self.read_vram(tile_addr)
+        pattern_addr = (tile_index * 16 + ((self.v >> 12) & 0x7)) | (
+            (self.ctrl & self.BG_TABLE) << 8
+        )
 
-        # Calculate pattern address
-        pattern_addr = tile_index * 16 + ((self.v >> 12) & 0x7)
-        if self.ctrl & self.BG_TABLE:
-            pattern_addr |= 0x1000
+        # Get pattern data and extract pixel - exactly like reference
+        palette_addr = (self.read_vram(pattern_addr) >> (7 ^ fine_x)) & 1
+        palette_addr |= ((self.read_vram(pattern_addr + 8) >> (7 ^ fine_x)) & 1) << 1
 
-        # Get pattern data
-        pattern_low = self.read_vram(pattern_addr) >> (7 - fine_x)
-        pattern_high = self.read_vram(pattern_addr + 8) >> (7 - fine_x)
-
-        pixel = (pattern_low & 1) | ((pattern_high & 1) << 1)
-
-        # Debug output for first few frames and pixels
-        if self.frame >= 32 and self.frame < 34 and self.scanline < 3 and x < 8:
-            debug_print(
-                f"BG({x},{self.scanline}): tile_addr=0x{tile_addr:04X}, tile_idx={tile_index}, pattern_addr=0x{pattern_addr:04X}, pattern_low={self.read_vram(pattern_addr)}, pattern_high={self.read_vram(pattern_addr + 8)}, pixel={pixel}"
-            )
-
-        if not pixel:
+        if not palette_addr:
             return 0
 
-        # Get attribute data
+        # Get attribute and combine - exactly like reference
         attr = self.read_vram(attr_addr)
-        palette = (attr >> ((self.v >> 4) & 4 | self.v & 2)) & 0x3
-
-        return pixel | (palette << 2)
+        return palette_addr | (((attr >> ((self.v >> 4) & 4 | self.v & 2)) & 0x3) << 2)
 
     def render_sprites(self, bg_pixel):
         """Render sprite pixel - based on reference implementation"""
@@ -642,9 +670,9 @@ class PPU:
 
             # Handle sprite flipping (match reference implementation exactly)
             if not (attr & 0x40):  # FLIP_HORIZONTAL bit - if NOT set, flip X
-                x_offset = 7 - x_offset
+                x_offset ^= 7  # Use XOR like reference implementation
             if attr & 0x80:  # FLIP_VERTICAL bit - if set, flip Y
-                y_offset = sprite_height - 1 - y_offset
+                y_offset ^= sprite_height - 1  # Use XOR like reference implementation
 
             # Calculate tile address based on sprite height
             if sprite_height == 16:
@@ -682,6 +710,9 @@ class PPU:
                 and not (self.status & self.SPRITE_0_HIT)
             ):
                 self.status |= self.SPRITE_0_HIT
+                debug_print(
+                    f"PPU: SPRITE 0 HIT detected at x={x}, y={y}, scanline={self.scanline}, cycle={self.cycle}, status=0x{self.status:02X}, frame={self.frame}"
+                )
 
             # Return sprite info packed into single value
             return pixel | (palette << 2) | (priority << 5) | (sprite_zero << 6)
@@ -723,6 +754,16 @@ class PPU:
         sprite_height = 16 if self.ctrl & self.LONG_SPRITE else 8
         current_scanline = self.scanline
 
+        # Debug sprite 0 during early frames
+        if self.frame >= 30 and self.frame < 32 and current_scanline == 0:
+            sprite0_y = self.oam[0]
+            sprite0_tile = self.oam[1]
+            sprite0_attr = self.oam[2]
+            sprite0_x = self.oam[3]
+            debug_print(
+                f"PPU: Sprite 0 at frame={self.frame}: Y={sprite0_y}, tile={sprite0_tile}, attr=0x{sprite0_attr:02X}, X={sprite0_x}"
+            )
+
         # Scan all 64 sprites (starting from OAM address for hardware accuracy)
         sprites_found = 0
         for i in range(64):
@@ -734,6 +775,12 @@ class PPU:
                 if sprites_found < 8:
                     self.oam_cache[sprites_found] = i * 4
                     sprites_found += 1
+
+                    # Debug when sprite 0 is evaluated for a scanline
+                    if i == 0 and self.frame >= 30 and self.frame < 32:
+                        debug_print(
+                            f"PPU: Sprite 0 evaluated for scanline {current_scanline}, sprite_y={sprite_y}, diff={diff}, frame={self.frame}"
+                        )
                 else:
                     # Sprite overflow - set flag only if not already set this frame
                     if not (

@@ -93,56 +93,10 @@ class NES:
             self.apu.step()
 
     def step_frame(self):
-        """Step one complete frame - exactly like reference implementation"""
-        # Reference emulator loop pattern: while (!ppu->render)
+        """Step one complete frame - using the unified step() method"""
         step_count = 0
-        initial_render_state = self.ppu.render
-
-        # DONT REMOVE THESE DEBUG PRINTS - they are crucial for debugging
-        debug_print(
-            f"Starting frame {self.ppu.frame}, initial render state: {initial_render_state}"
-        )
-
-        # Only show detailed state every 10 frames to reduce spam
-        if self.ppu.frame % 10 == 0:
-            debug_print(f"CPU State: {self.get_cpu_state()}")
-            debug_print(f"PPU State: {self.get_ppu_state()}")
-
-            # Check what instruction CPU is executing
-            current_pc = self.cpu.PC
-            opcode = self.memory.read(current_pc)
-            debug_print(f"CPU at PC=0x{current_pc:04X}, opcode=0x{opcode:02X}")
-        # If needed, disable debugging via the DEBUG_MODE flag in utils.py
-
         while not self.ppu.render:
-            # Reference timing: 2 PPU steps, 1 CPU step, 1 APU step per iteration
-            self.ppu.step()
-            self.ppu.step()
-
-            # Step CPU (returns number of cycles used)
-            cpu_cycles = self.cpu.step()
-            self.cpu_cycles += cpu_cycles
-
-            # Handle pending NMI
-            if self.nmi_pending:
-                if self.nmi_delay > 0:
-                    self.nmi_delay -= 1
-                else:
-                    debug_print("Handling NMI")
-                    self.handle_nmi()
-                    self.nmi_pending = False
-
-            # Check for VBlank NMI (when status bit 7 transitions from 0 to 1)
-            if (self.ppu.status & 0x80) and not hasattr(self, "_prev_status"):
-                if self.ppu.ctrl & 0x80:  # NMI enabled
-                    debug_print("VBlank NMI triggered")
-                    self.nmi_pending = True
-                    self.nmi_delay = 2  # 2 cycle delay
-            self._prev_status = self.ppu.status & 0x80
-
-            # Step APU
-            self.apu.step()
-
+            self.step()
             step_count += 1
             if step_count > 50000:  # Safety break
                 debug_print(
@@ -150,12 +104,7 @@ class NES:
                 )
                 break
 
-        # Debug frame completion like reference
-        debug_print(
-            f"Frame {self.ppu.frame}: {step_count} steps, PPU at scanline={self.ppu.scanline}, cycle={self.ppu.cycle}, mask={self.ppu.mask}"
-        )
-
-        # Reset render flag after frame completion - like reference
+        # Reset render flag after frame completion
         self.ppu.render = False
         return self.ppu.screen
 

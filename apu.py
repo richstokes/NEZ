@@ -460,9 +460,13 @@ class DMCChannel:
         self.bits_remaining -= 1
 
     def fill_sample_buffer(self):
-        """Fill the sample buffer from memory"""
+        """Fill the sample buffer from memory - matches reference implementation"""
         if self.sample_buffer_empty and self.bytes_remaining > 0:
             if self.memory:
+                # Add DMA cycles like reference implementation: apu->emulator->cpu.dma_cycles += 3;
+                if hasattr(self.memory, "nes") and hasattr(self.memory.nes, "cpu"):
+                    self.memory.nes.cpu.add_dma_cycles(3)
+
                 self.sample_buffer = self.memory.read(self.current_address)
                 self.sample_buffer_empty = False
 
@@ -477,6 +481,12 @@ class DMCChannel:
                         self.restart()
                     elif self.irq_enable:
                         self.irq_flag = True
+                        # Trigger CPU IRQ like reference implementation
+                        if hasattr(self.memory, "nes") and hasattr(
+                            self.memory.nes, "cpu"
+                        ):
+                            if hasattr(self.memory.nes.cpu, "trigger_interrupt"):
+                                self.memory.nes.cpu.trigger_interrupt("IRQ")
 
     def restart(self):
         """Restart the sample"""
@@ -496,35 +506,121 @@ class DMCChannel:
 class FrameSequencer:
     """APU Frame sequencer (controls envelope, sweep, and length counters)"""
 
-    def __init__(self):
+    def __init__(self, pal_mode=False):
         self.mode = 0  # 0 = 4-step, 1 = 5-step
         self.irq_inhibit = False
         self.irq_flag = False
         self.step = 0
         self.cycles = 0
+        self.reset_sequencer = False
+        self.pal_mode = pal_mode
 
     def clock(self, apu):
-        """Clock the frame sequencer"""
-        if self.mode == 0:  # 4-step mode
-            if self.cycles in [7457, 14913, 22371, 29829]:
+        """Clock the frame sequencer - matches reference implementation exactly"""
+        # Handle sequencer reset (from $4017 writes)
+        if self.reset_sequencer:
+            self.reset_sequencer = False
+            if self.mode == 1:  # 5-step mode
                 self.clock_quarter_frame(apu)
-            if self.cycles in [14913, 29829]:
                 self.clock_half_frame(apu)
-            if self.cycles == 29829:
-                if not self.irq_inhibit:
-                    self.irq_flag = True
-                self.cycles = 0
-            else:
-                self.cycles += 1
-        else:  # 5-step mode
-            if self.cycles in [7457, 14913, 22371, 37281]:
-                self.clock_quarter_frame(apu)
-            if self.cycles in [14913, 37281]:
-                self.clock_half_frame(apu)
-            if self.cycles == 37281:
-                self.cycles = 0
-            else:
-                self.cycles += 1
+            self.cycles = 0
+            return
+
+        # Use exact timing from reference implementation
+        if self.pal_mode:
+            # PAL timing
+            if self.mode == 0:  # 4-step mode
+                if self.cycles == 8313:
+                    self.clock_quarter_frame(apu)
+                    self.cycles += 1
+                elif self.cycles == 16627:
+                    self.clock_quarter_frame(apu)
+                    self.clock_half_frame(apu)
+                    self.cycles += 1
+                elif self.cycles == 24939:
+                    self.clock_quarter_frame(apu)
+                    self.cycles += 1
+                elif self.cycles == 33252:
+                    self.cycles += 1
+                elif self.cycles == 33253:
+                    self.clock_quarter_frame(apu)
+                    self.clock_half_frame(apu)
+                    if not self.irq_inhibit:
+                        self.irq_flag = True
+                        # Trigger CPU IRQ
+                        if hasattr(apu.nes, "cpu") and hasattr(
+                            apu.nes.cpu, "trigger_interrupt"
+                        ):
+                            apu.nes.cpu.trigger_interrupt("IRQ")
+                    self.cycles = 0
+                else:
+                    self.cycles += 1
+            else:  # 5-step mode
+                if self.cycles == 8313:
+                    self.clock_quarter_frame(apu)
+                    self.cycles += 1
+                elif self.cycles == 16627:
+                    self.clock_quarter_frame(apu)
+                    self.clock_half_frame(apu)
+                    self.cycles += 1
+                elif self.cycles == 24939:
+                    self.clock_quarter_frame(apu)
+                    self.cycles += 1
+                elif self.cycles == 33253:
+                    self.cycles += 1
+                elif self.cycles == 41565:
+                    self.clock_quarter_frame(apu)
+                    self.clock_half_frame(apu)
+                    self.cycles = 0
+                else:
+                    self.cycles += 1
+        else:
+            # NTSC timing (reference implementation)
+            if self.mode == 0:  # 4-step mode
+                if self.cycles == 7457:
+                    self.clock_quarter_frame(apu)
+                    self.cycles += 1
+                elif self.cycles == 14913:
+                    self.clock_quarter_frame(apu)
+                    self.clock_half_frame(apu)
+                    self.cycles += 1
+                elif self.cycles == 22371:
+                    self.clock_quarter_frame(apu)
+                    self.cycles += 1
+                elif self.cycles == 29828:
+                    self.cycles += 1
+                elif self.cycles == 29829:
+                    self.clock_quarter_frame(apu)
+                    self.clock_half_frame(apu)
+                    if not self.irq_inhibit:
+                        self.irq_flag = True
+                        # Trigger CPU IRQ
+                        if hasattr(apu.nes, "cpu") and hasattr(
+                            apu.nes.cpu, "trigger_interrupt"
+                        ):
+                            apu.nes.cpu.trigger_interrupt("IRQ")
+                    self.cycles = 0
+                else:
+                    self.cycles += 1
+            else:  # 5-step mode
+                if self.cycles == 7457:
+                    self.clock_quarter_frame(apu)
+                    self.cycles += 1
+                elif self.cycles == 14913:
+                    self.clock_quarter_frame(apu)
+                    self.clock_half_frame(apu)
+                    self.cycles += 1
+                elif self.cycles == 22371:
+                    self.clock_quarter_frame(apu)
+                    self.cycles += 1
+                elif self.cycles == 29829:
+                    self.cycles += 1
+                elif self.cycles == 37281:
+                    self.clock_quarter_frame(apu)
+                    self.clock_half_frame(apu)
+                    self.cycles = 0
+                else:
+                    self.cycles += 1
 
     def clock_quarter_frame(self, apu):
         """Clock envelopes and triangle linear counter"""
@@ -593,8 +689,8 @@ class APU:
         self.noise = NoiseChannel(pal_mode)
         self.dmc = DMCChannel(pal_mode, nes.memory)
 
-        # Frame sequencer
-        self.frame_sequencer = FrameSequencer()
+        # Frame sequencer with PAL support
+        self.frame_sequencer = FrameSequencer(pal_mode)
 
         # Audio output
         self.sample_rate = 48000
@@ -657,7 +753,7 @@ class APU:
             self._generate_sample()
 
     def _generate_sample(self):
-        """Generate an audio sample"""
+        """Generate an audio sample - matches reference implementation"""
         # Get channel outputs
         pulse1_out = self.pulse1.output()
         pulse2_out = self.pulse2.output()
@@ -665,16 +761,24 @@ class APU:
         noise_out = self.noise.output()
         dmc_out = self.dmc.output()
 
-        # Mix using lookup tables
+        # Mix using lookup tables (exact reference implementation)
         pulse_sum = pulse1_out + pulse2_out
+        # Triangle gets *3 multiplier, noise gets *2 multiplier like reference
         tnd_sum = 3 * triangle_out + 2 * noise_out + dmc_out
 
-        pulse_sample = self.pulse_table[min(pulse_sum, 30)]
-        tnd_sample = self.tnd_table[min(tnd_sum, 202)]
+        # Clamp to table bounds
+        pulse_sum = min(pulse_sum, 30)
+        tnd_sum = min(tnd_sum, 202)
 
-        # Combine and convert to 16-bit signed
+        # Use lookup tables for proper voltage levels
+        pulse_sample = self.pulse_table[pulse_sum]
+        tnd_sample = self.tnd_table[tnd_sum]
+
+        # Combine samples
         output = pulse_sample + tnd_sample
-        sample = int((output - 0.5) * 32767)
+
+        # Convert to 16-bit signed with proper scaling (reference uses 32000-32767 range)
+        sample = int(output * 32000)
         sample = max(-32768, min(32767, sample))
 
         self.audio_buffer.append(sample)
@@ -742,7 +846,8 @@ class APU:
             )
             if self.pulse1.enabled:
                 self.pulse1.length_counter = self.LENGTH_COUNTER_TABLE[value >> 3]
-            self.pulse1.envelope.start = True
+            # Reset envelope step like reference implementation
+            self.pulse1.envelope.step = 15
             self.pulse1.duty_step = 0
             self.pulse1.update_mute()
 
@@ -770,7 +875,8 @@ class APU:
             )
             if self.pulse2.enabled:
                 self.pulse2.length_counter = self.LENGTH_COUNTER_TABLE[value >> 3]
-            self.pulse2.envelope.start = True
+            # Reset envelope step like reference implementation
+            self.pulse2.envelope.step = 15
             self.pulse2.duty_step = 0
             self.pulse2.update_mute()
 
@@ -802,7 +908,8 @@ class APU:
         elif addr == 0x400F:  # Noise length
             if self.noise.enabled:
                 self.noise.length_counter = self.LENGTH_COUNTER_TABLE[value >> 3]
-            self.noise.envelope.start = True
+            # Reset envelope step like reference implementation
+            self.noise.envelope.step = 15
 
         elif addr == 0x4010:  # DMC control
             self.dmc.irq_enable = bool(value & 0x80)
@@ -851,11 +958,8 @@ class APU:
             if self.frame_sequencer.irq_inhibit:
                 self.frame_sequencer.irq_flag = False
 
-            # Reset sequencer
-            self.frame_sequencer.cycles = 0
-            if self.frame_sequencer.mode == 1:  # 5-step mode
-                self.frame_sequencer.clock_quarter_frame(self)
-                self.frame_sequencer.clock_half_frame(self)
+            # Reset sequencer with immediate frame execution (reference implementation)
+            self.frame_sequencer.reset_sequencer = True
 
     def reset(self):
         """Reset the APU"""
