@@ -879,20 +879,30 @@ class CPU:
 
     def _handle_interrupt(self):
         """Handle pending interrupt"""
+        old_PC = self.PC
+        
         if self.interrupt_pending == "NMI":
             vector_addr = 0xFFFA
+            debug_print(f"CPU: Handling NMI interrupt, vector=0xFFFA")
         elif self.interrupt_pending == "IRQ":
             vector_addr = 0xFFFE
+            debug_print(f"CPU: Handling IRQ interrupt, vector=0xFFFE")
         elif self.interrupt_pending == "RST":
             vector_addr = 0xFFFC
+            debug_print(f"CPU: Handling RESET interrupt, vector=0xFFFC")
         else:
+            debug_print(f"CPU: No valid interrupt to handle: {self.interrupt_pending}")
             return
 
         # Push PC and status register to stack
         self.push_stack((self.PC >> 8) & 0xFF)
         self.push_stack(self.PC & 0xFF)
+
+        # Status handling is different for NMI vs IRQ
         status = self.get_status_byte()
-        if self.interrupt_pending == "IRQ":
+        if self.interrupt_pending == "NMI":
+            status &= 0xEF  # Clear B flag for NMI
+        elif self.interrupt_pending == "IRQ":
             status |= 0x10  # Set B flag for IRQ
         self.push_stack(status)
 
@@ -903,6 +913,18 @@ class CPU:
         low = self.memory.read(vector_addr)
         high = self.memory.read(vector_addr + 1)
         self.PC = (high << 8) | low
+        
+        debug_print(f"CPU: Interrupt handler jumping to 0x{self.PC:04X}, old PC=0x{old_PC:04X}")
+        
+        # Clear the pending interrupt
+        self.interrupt_pending = None
+        low = self.memory.read(vector_addr)
+        high = self.memory.read(vector_addr + 1)
+        new_pc = (high << 8) | low
+        debug_print(
+            f"CPU: Interrupt handler jumping to 0x{new_pc:04X}, old PC=0x{self.PC:04X}"
+        )
+        self.PC = new_pc
 
         self.interrupt_pending = None
 
@@ -1094,8 +1116,19 @@ class CPU:
 
     def trigger_interrupt(self, interrupt_type):
         """Trigger an interrupt (NMI, IRQ, RST)"""
-        debug_print(f"CPU: Interrupt triggered: {interrupt_type}")
-        self.interrupt_pending = interrupt_type
+        debug_print(
+            f"CPU: Interrupt triggered: {interrupt_type}, PC=0x{self.PC:04X}, prev_interrupt={self.interrupt_pending}"
+        )
+
+        # NMI takes precedence over IRQ
+        if interrupt_type == "NMI":
+            # NMI always takes precedence regardless of previous interrupt
+            self.interrupt_pending = interrupt_type
+            # For NMI we clear interrupt status immediately to ensure it's handled
+            self.interrupt_state = 0
+        elif interrupt_type == "IRQ" and self.interrupt_pending != "NMI":
+            # IRQ only if no NMI is pending
+            self.interrupt_pending = interrupt_type
 
     def add_dma_cycles(self, cycles):
         """Add DMA cycles that will delay CPU execution"""

@@ -730,6 +730,19 @@ class APU:
         """Initialize with SDL audio stream from main emulator"""
         self.audio_stream = audio_stream
 
+        # Additional initialization for audio
+        if (
+            hasattr(self, "audio_stream")
+            and self.audio_stream
+            and self.audio_stream != 0
+        ):
+            # Make sure we're producing samples
+            self.sample_rate = 48000
+            self.frame_sample_count = self.sample_rate // 60  # 60 Hz refresh rate
+            # Enable audio output flag
+            self.audio_enabled = True
+            print(f"APU: Audio initialized with stream {self.audio_stream}")
+
     def step(self):
         """Step the APU by one CPU cycle - optimized"""
         # Reduce function call overhead by combining operations

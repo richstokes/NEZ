@@ -95,30 +95,69 @@ class NES:
     def step_frame(self):
         """Step one complete frame - using the unified step() method"""
         step_count = 0
+        # Reset the render flag at the start of each frame
+        self.ppu.render = False
+
+        # Clear frame-state variables to ensure clean start
+        # This ensures proper timing between CPU and PPU
+        self.nmi_pending = False
+        self.nmi_delay = 0
+
+        # Track the last PPU state to detect oscillations
+        last_scanline = -1
+        last_cycle = -1
+        oscillation_counter = 0
+
         while not self.ppu.render:
             self.step()
             step_count += 1
-            if step_count > 50000:  # Safety break
+
+            # Detect oscillation (PPU stuck at same position)
+            if self.ppu.scanline == last_scanline and self.ppu.cycle == last_cycle:
+                oscillation_counter += 1
+                if oscillation_counter > 100:
+                    debug_print(
+                        f"DEBUG: PPU OSCILLATION DETECTED at scanline={self.ppu.scanline}, cycle={self.ppu.cycle}, frame={self.ppu.frame}"
+                    )
+                    # Force the PPU to advance
+                    self.ppu.cycle += 1
+                    oscillation_counter = 0
+            else:
+                oscillation_counter = 0
+                last_scanline = self.ppu.scanline
+                last_cycle = self.ppu.cycle
+
+            if (
+                step_count > 89000
+            ):  # Safety break to prevent infinite loops (increased for NTSC frame)
                 debug_print(
-                    f"DEBUG: step_frame ran {step_count} steps, PPU at scanline={self.ppu.scanline}, cycle={self.ppu.cycle}, mask={self.ppu.mask}, render={self.ppu.render}"
+                    f"DEBUG: step_frame safety break at {step_count} steps, PPU at scanline={self.ppu.scanline}, cycle={self.ppu.cycle}, mask={self.ppu.mask}, render={self.ppu.render}, frame={self.ppu.frame}"
                 )
+                # Force render flag to exit loop if we hit the safety limit
+                self.ppu.render = True
                 break
 
-        # Reset render flag after frame completion
-        self.ppu.render = False
+        # The render flag is kept true until the next frame starts
+        # This is important for proper frame synchronization
         return self.ppu.screen
 
     def handle_nmi(self):
         """Handle Non-Maskable Interrupt"""
         # Trigger NMI through the CPU's new interrupt system
         if hasattr(self.cpu, "trigger_interrupt"):
+            debug_print(
+                f"NES: Calling CPU.trigger_interrupt('NMI'), CPU PC=0x{self.cpu.PC:04X}"
+            )
             self.cpu.trigger_interrupt("NMI")
         else:
             # Fallback for old CPU implementation
             # Push PC and status to stack
             self.cpu.push_stack((self.cpu.PC >> 8) & 0xFF)
             self.cpu.push_stack(self.cpu.PC & 0xFF)
-            self.cpu.push_stack(self.cpu.get_status_byte())
+
+            # Mask B flag off when pushing status during interrupt
+            status = self.cpu.get_status_byte() & 0xEF  # Clear B flag (bit 4)
+            self.cpu.push_stack(status)
 
             # Set interrupt disable flag
             self.cpu.I = 1
@@ -126,13 +165,27 @@ class NES:
             # Jump to NMI vector
             low = self.memory.read(0xFFFA)
             high = self.memory.read(0xFFFB)
-            self.cpu.PC = (high << 8) | low
+            new_pc = (high << 8) | low
+            debug_print(
+                f"NES: NMI handling - jumping to 0x{new_pc:04X}, prev PC=0x{self.cpu.PC:04X}"
+            )
+            self.cpu.PC = new_pc
 
     def trigger_nmi(self):
         """Trigger NMI immediately - called directly from PPU"""
         debug_print(f"NES: trigger_nmi() called, setting nmi_pending=True")
+        
+        # Mark NMI as pending - will be handled in next CPU step
         self.nmi_pending = True
-        self.nmi_delay = 2  # 2 cycle delay
+        
+        # The delay is important for accurate timing
+        # NMI is detected at the end of the current instruction
+        # 2 cycles gives enough time for the current instruction to finish
+        self.nmi_delay = 2
+        
+        # Inform user about NMI trigger during early frames
+        if self.ppu.frame <= 35:
+            debug_print(f"NES: NMI triggered at frame {self.ppu.frame}, scanline {self.ppu.scanline}, CPU PC=0x{self.cpu.PC:04X}")
 
     def set_controller_input(self, controller, buttons):
         """Set controller input

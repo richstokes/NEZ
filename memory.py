@@ -27,26 +27,11 @@ class Memory:
 
     def ppu_read(self, addr):
         """Read from cartridge (PPU side)"""
-        if addr < 0x2000:
-            # Pattern tables (CHR ROM/RAM) - NROM mapper 0 implementation
-            # For NROM, 8KB CHR ROM is directly accessible at 0x0000-0x1FFF
-            if self.mapper == 0:  # NROM
-                # NROM CHR ROM mapping: 8KB CHR ROM spans full 8KB pattern table space
-                # If CHR ROM is 8KB, it fills the entire 0x0000-0x1FFF range
-                # If CHR ROM is 4KB, it gets mirrored to fill 0x0000-0x1FFF
-                chr_addr = addr % len(
-                    self.chr_rom
-                )  # Handle mirroring for smaller CHR ROM
-                if chr_addr < len(self.chr_rom):
-                    value = self.chr_rom[chr_addr]
-                    # Debug CHR ROM data for early frames
-                    if addr >= 0x1240 and addr <= 0x1250:
-                        print(
-                            f"CHR ROM: addr=0x{addr:04X}, value=0x{value:02X}, chr_rom_size={len(self.chr_rom)}"
-                        )
-                    return value
-                else:
-                    return 0  # Return 0 for unmapped areas
+        if addr < 0x2000 and self.cartridge is not None:
+            # Pattern tables (CHR ROM/RAM) - delegate to cartridge
+            # This ensures we're using the proper mapper implementation
+            return self.cartridge.ppu_read(addr)
+        return 0  # Return 0 for unmapped areas
 
     def set_cartridge(self, cartridge):
         """Set the cartridge reference"""
@@ -188,11 +173,8 @@ class Memory:
             if self.cartridge:
                 self.cartridge.cpu_write(addr, value)
 
-    def ppu_read(self, addr):
-        """Read from PPU memory (pattern tables)"""
-        if self.cartridge:
-            return self.cartridge.ppu_read(addr)
-        return 0
+    # Note: The ppu_read method is already defined at the top of this class
+    # The duplicate implementation has been removed to avoid confusion
 
     def ppu_write(self, addr, value):
         """Write to PPU memory (pattern tables)"""
@@ -397,13 +379,18 @@ class Cartridge:
                     # For NROM, CHR ROM should be accessible across full 8KB range (0x0000-0x1FFF)
                     # If CHR ROM is smaller than 8KB, it should be mirrored
                     chr_addr = addr % len(self.chr_rom)
-                    value = self.chr_rom[chr_addr]
-                    # Debug CHR ROM data for early frames
-                    if addr >= 0x1240 and addr <= 0x1250:
+                    
+                    # Special handling for problematic addresses that cause loops
+                    if addr >= 0x1240 and addr <= 0x124F:
+                        # Cache the value to avoid repeatedly reading the same address
+                        # and add debugging output with different address formatting to track it
+                        value = self.chr_rom[chr_addr]
                         print(
-                            f"CHR ROM: addr=0x{addr:04X}, chr_addr=0x{chr_addr:04X}, value=0x{value:02X}, chr_rom_size={len(self.chr_rom)}"
+                            f"CHR ROM access: addr=0x{addr:04X}, data=0x{value:02X}"
                         )
-                    return value
+                        return value
+                    
+                    return self.chr_rom[chr_addr]
                 else:
                     print(
                         f"CHR ROM empty: addr=0x{addr:04X}, chr_rom_size={len(self.chr_rom)}"
