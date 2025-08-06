@@ -167,6 +167,11 @@ class NEZEmulator:
         # Update controller input
         self.nes.set_controller_input(1, self.controller_state)
 
+        # Debug: Log controller input when pressed
+        active_buttons = [btn for btn, state in self.controller_state.items() if state]
+        if active_buttons:
+            debug_print(f"Controller input: {active_buttons}")
+
     def handle_keyup(self, key):
         """Handle key release"""
         if key == sdl2.SDLK_j:  # A button (match reference: J)

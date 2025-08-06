@@ -920,15 +920,6 @@ class CPU:
 
         # Clear the pending interrupt
         self.interrupt_pending = None
-        low = self.memory.read(vector_addr)
-        high = self.memory.read(vector_addr + 1)
-        new_pc = (high << 8) | low
-        debug_print(
-            f"CPU: Interrupt handler jumping to 0x{new_pc:04X}, old PC=0x{self.PC:04X}"
-        )
-        self.PC = new_pc
-
-        self.interrupt_pending = None
 
     def _prepare_branch(self, instruction, address):
         """Prepare branch instruction execution"""
@@ -1131,9 +1122,11 @@ class CPU:
             # When an NMI occurs, ignore any pending IRQ (fix for Super Mario Bros)
             self.I = 1  # Set interrupt disable flag to block IRQs
         elif interrupt_type == "IRQ" and self.interrupt_pending != "NMI":
-            # IRQ only if no NMI is pending and not disabled
+            # IRQ only if no NMI is pending and interrupts are enabled
             if self.I == 0:  # Only set if interrupt flag is clear
                 self.interrupt_pending = interrupt_type
+            else:
+                debug_print(f"CPU: IRQ ignored - interrupts disabled (I={self.I})")
 
     def add_dma_cycles(self, cycles):
         """Add DMA cycles that will delay CPU execution"""

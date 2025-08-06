@@ -480,13 +480,15 @@ class DMCChannel:
                     if self.loop:
                         self.restart()
                     elif self.irq_enable:
-                        self.irq_flag = True
-                        # Trigger CPU IRQ like reference implementation
-                        if hasattr(self.memory, "nes") and hasattr(
-                            self.memory.nes, "cpu"
-                        ):
-                            if hasattr(self.memory.nes.cpu, "trigger_interrupt"):
-                                self.memory.nes.cpu.trigger_interrupt("IRQ")
+                        # Only trigger IRQ if not already flagged (prevent IRQ spam)
+                        if not self.irq_flag:
+                            self.irq_flag = True
+                            # Trigger CPU IRQ like reference implementation
+                            if hasattr(self.memory, "nes") and hasattr(
+                                self.memory.nes, "cpu"
+                            ):
+                                if hasattr(self.memory.nes.cpu, "trigger_interrupt"):
+                                    self.memory.nes.cpu.trigger_interrupt("IRQ")
 
     def restart(self):
         """Restart the sample"""
@@ -546,12 +548,14 @@ class FrameSequencer:
                     self.clock_quarter_frame(apu)
                     self.clock_half_frame(apu)
                     if not self.irq_inhibit:
-                        self.irq_flag = True
-                        # Trigger CPU IRQ
-                        if hasattr(apu.nes, "cpu") and hasattr(
-                            apu.nes.cpu, "trigger_interrupt"
-                        ):
-                            apu.nes.cpu.trigger_interrupt("IRQ")
+                        # Only trigger IRQ if not already flagged (prevent IRQ spam)
+                        if not self.irq_flag:
+                            self.irq_flag = True
+                            # Trigger CPU IRQ
+                            if hasattr(apu.nes, "cpu") and hasattr(
+                                apu.nes.cpu, "trigger_interrupt"
+                            ):
+                                apu.nes.cpu.trigger_interrupt("IRQ")
                     self.cycles = 0
                 else:
                     self.cycles += 1
@@ -593,12 +597,14 @@ class FrameSequencer:
                     self.clock_quarter_frame(apu)
                     self.clock_half_frame(apu)
                     if not self.irq_inhibit:
-                        self.irq_flag = True
-                        # Trigger CPU IRQ
-                        if hasattr(apu.nes, "cpu") and hasattr(
-                            apu.nes.cpu, "trigger_interrupt"
-                        ):
-                            apu.nes.cpu.trigger_interrupt("IRQ")
+                        # Only trigger IRQ if not already flagged (prevent IRQ spam)
+                        if not self.irq_flag:
+                            self.irq_flag = True
+                            # Trigger CPU IRQ
+                            if hasattr(apu.nes, "cpu") and hasattr(
+                                apu.nes.cpu, "trigger_interrupt"
+                            ):
+                                apu.nes.cpu.trigger_interrupt("IRQ")
                     self.cycles = 0
                 else:
                     self.cycles += 1
