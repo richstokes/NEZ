@@ -143,6 +143,9 @@ class NES:
 
     def handle_nmi(self):
         """Handle Non-Maskable Interrupt"""
+        # Clear any pending IRQ - NMI should take precedence
+        self.cpu.interrupt_pending = None
+
         # Trigger NMI through the CPU's new interrupt system
         if hasattr(self.cpu, "trigger_interrupt"):
             debug_print(
@@ -174,18 +177,30 @@ class NES:
     def trigger_nmi(self):
         """Trigger NMI immediately - called directly from PPU"""
         debug_print(f"NES: trigger_nmi() called, setting nmi_pending=True")
-        
+        debug_print(
+            f"NES: NMI triggered at frame {self.ppu.frame}, scanline {self.ppu.scanline}, CPU PC=0x{self.cpu.PC:04X}"
+        )
+
         # Mark NMI as pending - will be handled in next CPU step
         self.nmi_pending = True
-        
+
+        # Clear any pending IRQ to prioritize NMI
+        if (
+            hasattr(self.cpu, "interrupt_pending")
+            and self.cpu.interrupt_pending == "IRQ"
+        ):
+            self.cpu.interrupt_pending = None
+
         # The delay is important for accurate timing
         # NMI is detected at the end of the current instruction
         # 2 cycles gives enough time for the current instruction to finish
         self.nmi_delay = 2
-        
+
         # Inform user about NMI trigger during early frames
         if self.ppu.frame <= 35:
-            debug_print(f"NES: NMI triggered at frame {self.ppu.frame}, scanline {self.ppu.scanline}, CPU PC=0x{self.cpu.PC:04X}")
+            debug_print(
+                f"NES: NMI triggered at frame {self.ppu.frame}, scanline {self.ppu.scanline}, CPU PC=0x{self.cpu.PC:04X}"
+            )
 
     def set_controller_input(self, controller, buttons):
         """Set controller input

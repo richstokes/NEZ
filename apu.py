@@ -739,9 +739,16 @@ class APU:
             # Make sure we're producing samples
             self.sample_rate = 48000
             self.frame_sample_count = self.sample_rate // 60  # 60 Hz refresh rate
+            # Initialize audio buffer if not already done
+            if not hasattr(self, "audio_buffer") or self.audio_buffer is None:
+                self.audio_buffer = []
             # Enable audio output flag
             self.audio_enabled = True
             print(f"APU: Audio initialized with stream {self.audio_stream}")
+            # Ensure we're generating the correct number of samples per frame
+            self.cycles_per_sample = (
+                1789773 / self.sample_rate
+            )  # NES CPU clock rate / sample rate
 
     def step(self):
         """Step the APU by one CPU cycle - optimized"""
@@ -802,14 +809,45 @@ class APU:
 
     def _queue_audio(self):
         """Queue audio buffer to SDL"""
-        if self.audio_stream and self.audio_buffer:
+        if (
+            not hasattr(self, "audio_stream")
+            or not self.audio_stream
+            or not hasattr(self, "audio_buffer")
+            or not self.audio_buffer
+        ):
+            return
+
+        try:
             # Convert to bytes using struct
             audio_data = struct.pack(f"{len(self.audio_buffer)}h", *self.audio_buffer)
 
             # Queue to SDL2 audio device
-            sdl2.SDL_QueueAudio(self.audio_stream, audio_data, len(audio_data))
+            result = sdl2.SDL_QueueAudio(self.audio_stream, audio_data, len(audio_data))
+            if result != 0:
+                error = sdl2.SDL_GetError().decode("utf-8")
+                print(f"APU: Error queueing audio: {error}")
+                # Try to reinitialize audio if there was an error
+                if hasattr(self, "init_audio_stream"):
+                    self.init_audio_stream(self.audio_stream)
 
-            self.audio_buffer.clear()
+            # Debug output for audio (only if values are non-zero)
+            if len(self.audio_buffer) > 0:
+                min_val = min(self.audio_buffer)
+                max_val = max(self.audio_buffer)
+                if min_val != 0 or max_val != 0:
+                    print(
+                        f"APU: Queued {len(self.audio_buffer)} audio samples, range: {min_val} to {max_val}"
+                    )
+
+        except Exception as e:
+            print(f"APU: Error in _queue_audio: {e}")
+            # Attempt recovery - clear error and reinitialize
+            sdl2.SDL_ClearError()
+            if hasattr(self, "init_audio_stream"):
+                self.init_audio_stream(self.audio_stream)
+
+        # Clear buffer after queuing
+        self.audio_buffer.clear()
 
     def read_status(self):
         """Read APU status register ($4015)"""
