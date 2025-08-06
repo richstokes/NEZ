@@ -11,6 +11,7 @@ We are writing a NES emulator in python.
 # Important considerations
 - Check if a similar method exists before adding a new one. We don't want duplicates or cluttered code
 - If you're unsure, review the #codebase to understand the logic/flow completely before working on a solution
+- If you need to add debug logging, use the `debug_print` function from utils.py to log messages. This will help in tracking down issues without cluttering the output.
 
 
 # References
