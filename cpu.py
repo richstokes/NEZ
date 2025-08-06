@@ -839,6 +839,7 @@ class CPU:
             return 1
 
         # Fetch and decode new instruction
+        old_pc = self.PC
         opcode = self.memory.read(self.PC)
         self.PC = (self.PC + 1) & 0xFFFF
 
@@ -853,10 +854,29 @@ class CPU:
 
         instruction, addressing_mode, length, _ = self.instructions[opcode]
 
+        # Debug: Log instruction execution to see if we're getting stuck
+        if (
+            self.total_cycles % 10000 == 0
+            or instruction in ["RTI", "LDA", "STA", "JMP", "BNE", "BEQ", "BCC", "BCS"]
+            or old_pc == 0x8150
+            or old_pc == 0x8153
+        ):
+            debug_print(
+                f"CPU: Executing {instruction} at PC=0x{old_pc:04X}, opcode=0x{opcode:02X}, cycles={self.total_cycles}, length={length}"
+            )
+
         # Get operand and calculate address based on addressing mode
+        pc_before_address = self.PC
         address = self._get_address_with_cycles(
             addressing_mode, length - 1, instruction
         )
+        pc_after_address = self.PC
+
+        # Debug: Check if PC is advancing properly
+        if old_pc == 0x8150 or old_pc == 0x8153:
+            debug_print(
+                f"CPU: PC progression: {old_pc:04X} -> {pc_before_address:04X} -> {pc_after_address:04X}, addressing_mode={addressing_mode}, length={length}, address=0x{address:04X if address is not None else 0:04X}"
+            )
 
         # Optimized instruction execution using dispatch table
         if opcode in self.instruction_dispatch:
@@ -864,6 +884,10 @@ class CPU:
         else:
             # Fallback to dynamic dispatch for unofficial opcodes
             getattr(self, f"execute_{instruction.lower()}")(address, addressing_mode)
+
+        # Debug: Check if PC changed after instruction execution
+        if old_pc == 0x8150 or old_pc == 0x8153:
+            debug_print(f"CPU: PC after instruction execution: {self.PC:04X}")
 
         # Prepare for branch instructions (they need special handling)
         if instruction in ["BPL", "BMI", "BVC", "BVS", "BCC", "BCS", "BNE", "BEQ"]:
@@ -1246,8 +1270,15 @@ class CPU:
     # Instruction implementations - Updated for hardware accuracy
     def execute_lda(self, operand, addressing_mode):
         # Optimized: avoid duplicate reads for immediate mode
-        self.A = self.memory.read(operand)
+        value = self.memory.read(operand)
+        self.A = value
         self.set_zero_negative(self.A)
+        
+        # Debug: Log LDA reads from specific addresses that might be causing loops
+        if operand == 0x2002 or operand == 0x2000 or operand == 0x2001:
+            debug_print(f"CPU: LDA from PPU register 0x{operand:04X} = 0x{value:02X}, A=0x{self.A:02X}")
+        elif self.total_cycles % 1000 == 0:
+            debug_print(f"CPU: LDA from 0x{operand:04X} = 0x{value:02X}, A=0x{self.A:02X}")
 
     def execute_ldx(self, operand, addressing_mode):
         self.X = self.memory.read(operand)
