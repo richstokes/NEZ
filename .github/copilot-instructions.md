@@ -12,6 +12,8 @@ We are writing a NES emulator in python.
 - Check if a similar method exists before adding a new one. We don't want duplicates or cluttered code
 - If you're unsure, review the #codebase to understand the logic/flow completely before working on a solution
 - If you need to add debug logging, use the `debug_print` function from utils.py to log messages. This will help in tracking down issues without cluttering the output.
+- Don't create new files unless absolutely necessary. Use existing files and methods to keep the codebase clean and maintainable.
+- Don't create documentation
 
 
 # References
