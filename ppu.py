@@ -474,9 +474,11 @@ class PPU:
                 debug_print(
                     f"PPU: Setting VBlank flag at scanline={self.scanline}, cycle={self.cycle}, frame={self.frame}"
                 )
-                # Set VBlank flag and immediately trigger NMI if enabled
+                # Set VBlank flag and clear sprite 0 hit
                 old_status = self.status
                 self.status |= self.V_BLANK  # Set VBlank flag
+                self.status &= ~self.SPRITE_0_HIT  # Clear sprite 0 hit flag
+                self.sprite_zero_hit = False
                 debug_print(
                     f"PPU: VBlank flag set, status now=0x{self.status:02X}, frame={self.frame}"
                 )
@@ -561,11 +563,6 @@ class PPU:
             # Force increment to break potential infinite loop
             self.cycle += 1
 
-    def _increment_scanline_cycle(self):
-        """Optimized scanline/cycle increment - DEPRECATED"""
-        # This method is no longer used since we inline the logic above
-        pass
-
     def render_pixel(self):
         """Render a single pixel - based on reference implementation"""
         x = self.cycle - 1
@@ -622,10 +619,8 @@ class PPU:
             # Background opaque, sprite transparent
             palette_addr = bg_palette * 4 + bg_pixel
         else:
-            # Both opaque - check priority and sprite 0 hit
-            if sprite_zero and x < 255:
-                self.status |= self.SPRITE_0_HIT
-
+            # Both opaque - check priority
+            # Sprite 0 hit detection is handled in render_sprites method
             if sprite_priority == 0:
                 palette_addr = 0x10 + sprite_palette * 4 + sprite_pixel
             else:
@@ -747,7 +742,23 @@ class PPU:
                 if pixel:
                     palette = attr & 0x3
                     priority = (attr >> 5) & 1
-                    sprite_zero = j == 0
+
+                    # Check for sprite 0 hit in special case too
+                    if (
+                        sprite_idx == 0  # This sprite IS sprite 0 (OAM bytes 0-3)
+                        and bg_pixel > 0  # Background pixel is opaque
+                        and pixel > 0  # Sprite pixel is opaque
+                        and x < 255  # Not at the rightmost pixel
+                        and not (
+                            self.status & self.SPRITE_0_HIT
+                        )  # Not already set this frame
+                        and (self.mask & self.SHOW_BG)  # Background rendering enabled
+                    ):
+                        self.status |= self.SPRITE_0_HIT
+                        self.sprite_zero_hit = True
+                        debug_print(f"PPU: SPRITE 0 HIT (special case) at x={x}, y={y}")
+
+                    sprite_zero = sprite_idx == 0
                     return pixel | (palette << 2) | (priority << 5) | (sprite_zero << 6)
                 continue
 
@@ -774,22 +785,34 @@ class PPU:
             priority = (
                 attr >> 5
             ) & 1  # 0 = in front of background, 1 = behind background
-            sprite_zero = j == 0  # First sprite in OAM cache is sprite 0
-
-            # Check sprite 0 hit (only if both background and sprite 0 are opaque)
+            # Check for sprite 0 hit - CRITICAL FIX: use sprite_idx (OAM index) not j (cache index)
+            # This matches reference implementation exactly: i == 0 where i is OAM sprite index
             if (
-                sprite_zero
-                and bg_pixel
-                and pixel
-                and x < 255
-                and not (self.status & self.SPRITE_0_HIT)
+                sprite_idx == 0 and y >= 24 and y <= 31
+            ):  # If this is sprite 0 in its Y range, add detailed debug info
+                debug_print(
+                    f"PPU: Sprite 0 pixel check at x={x}, y={y}: bg_pixel={bg_pixel}, sprite_pixel={pixel}, sprite 0 hit flag={bool(self.status & self.SPRITE_0_HIT)}, BG enabled={bool(self.mask & self.SHOW_BG)}"
+                )
+
+            if (
+                sprite_idx == 0  # This sprite IS sprite 0 (OAM bytes 0-3)
+                and bg_pixel > 0  # Background pixel is opaque
+                and pixel > 0  # Sprite pixel is opaque
+                and x < 255  # Not at the rightmost pixel
+                and not (self.status & self.SPRITE_0_HIT)  # Not already set this frame
+                and (
+                    self.mask & self.SHOW_BG
+                )  # Background rendering enabled (matches reference)
             ):
                 self.status |= self.SPRITE_0_HIT
+                self.sprite_zero_hit = True
                 debug_print(
-                    f"PPU: SPRITE 0 HIT detected at x={x}, y={y}, scanline={self.scanline}, cycle={self.cycle}, status=0x{self.status:02X}, frame={self.frame}"
+                    f"PPU: SPRITE 0 HIT detected at x={x}, y={y}, scanline={self.scanline}, cycle={self.cycle}, bg_pixel={bg_pixel}, sprite_pixel={pixel}, frame={self.frame}"
                 )
 
             # Return sprite info packed into single value
+            # Set sprite_zero flag based on actual OAM sprite index (not cache position)
+            sprite_zero = sprite_idx == 0
             return pixel | (palette << 2) | (priority << 5) | (sprite_zero << 6)
 
         return 0  # No sprite found
@@ -828,6 +851,7 @@ class PPU:
 
         # SAFEGUARD: If we're in a frame that's showing the oscillation pattern,
         # use special handling for sprites when at the pre-render scanline (261)
+        # BUT still do normal evaluation for visible scanlines
         if self.frame >= 58 and self.scanline == 261:
             debug_print(
                 f"PPU: Using safe sprite evaluation for frame {self.frame}, scanline {self.scanline}"
@@ -863,9 +887,9 @@ class PPU:
                     sprites_found += 1
 
                     # Debug when sprite 0 is evaluated for a scanline
-                    if i == 0 and self.frame >= 30 and self.frame < 32:
+                    if i == 0:  # Always debug sprite 0, remove frame restriction
                         debug_print(
-                            f"PPU: Sprite 0 evaluated for scanline {current_scanline}, sprite_y={sprite_y}, diff={diff}, frame={self.frame}"
+                            f"PPU: Sprite 0 evaluated for scanline {current_scanline}, sprite_y={sprite_y}, diff={diff}, frame={self.frame}, sprites_found={sprites_found}"
                         )
                 else:
                     # Sprite overflow - set flag only if not already set this frame
