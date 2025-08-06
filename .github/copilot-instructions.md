@@ -8,6 +8,11 @@ We are writing a NES emulator in python.
 3. grep or head or tail the log.log file for relevant information. Use this to help debug and fix the emulator.
 
 
+# Important considerations
+- Check if a similar method exists before adding a new one. We don't want duplicates or cluttered code
+- If you're unsure, review the #codebase to understand the logic/flow completely before working on a solution
+
+
 # References
 Use https://github.com/ObaraEmmanuel/NES as a reference for how the code should work. 
 
