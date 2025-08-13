@@ -39,6 +39,11 @@ class CPU:
             0  # 0 = normal, 1 = branch pending, 2 = interrupt pending
         )
 
+        # CLI/SEI/PLP latency tracking for interrupt flag changes
+        self.interrupt_inhibit = 1  # Effective interrupt disable (tracks delay)
+        self.interrupt_delay_pending = False  # True if I flag change is delayed
+        self.interrupt_delay_value = 0  # Value to apply when delay completes
+
         # Branch state tracking
         self.branch_pending = False
         self.branch_target = 0
@@ -561,7 +566,7 @@ class CPU:
             0x73: ("RRA", "indirect_indexed", 2, 8),
             # Additional missing unofficial opcodes
             0xEB: ("SBC", "immediate", 2, 2),  # Unofficial SBC
-            0xBB: ("LAS", "absolute_y", 3, 4),  # LAS - Load Accumulator and Stack
+            0xBB: ("LAX", "absolute_y", 3, 4),  # LAX - Load Accumulator and X
             0x9B: ("TAS", "absolute_y", 3, 5),  # TAS - Transfer A and X to Stack
             0x02: ("KIL", "implied", 1, 2),  # KIL - Kill (jam/halt processor)
             0x12: ("KIL", "implied", 1, 2),  # KIL
@@ -767,6 +772,10 @@ class CPU:
             0x7C: self.execute_nop,
             0xDC: self.execute_nop,
             0xFC: self.execute_nop,
+            # LAX unofficial instructions
+            0xBB: self.execute_lax,
+            0xBF: self.execute_lax,
+            0xB3: self.execute_lax,
         }
 
     def reset(self):
@@ -795,6 +804,11 @@ class CPU:
         self.interrupt_state = 0
         self.branch_pending = False
 
+        # Initialize interrupt latency state
+        self.interrupt_inhibit = self.I  # Initialize to match I flag
+        self.interrupt_delay_pending = False
+        self.interrupt_delay_value = 0
+
     def step(self):
         """Execute one CPU cycle with hardware-accurate timing"""
         # Track odd/even cycles for accurate DMA timing
@@ -811,46 +825,46 @@ class CPU:
             self.cycles -= 1
             return 1
 
+        # RustyNES-style: Execute complete instruction and return total cycles consumed
+        cycles_consumed = self.run_instruction()
+
+        # Set cycles to count down for the remaining cycles
+        self.cycles = cycles_consumed - 1  # -1 because we already used one cycle
+        return 1
+
+    def run_instruction(self):
+        """Execute complete instruction following RustyNES model - returns total cycles consumed"""
+        # Apply any pending interrupt flag changes from previous instruction
+        if self.interrupt_delay_pending:
+            self.I = self.interrupt_delay_value
+            self.interrupt_inhibit = self.interrupt_delay_value
+            self.interrupt_delay_pending = False
+
         # Handle pending interrupts at the start of a new instruction
+        # Use interrupt_inhibit for IRQ checking (accounts for CLI/SEI/PLP delay)
         if self.interrupt_pending and self.interrupt_state == 0:
             if self.interrupt_pending == "NMI" or (
-                self.interrupt_pending == "IRQ" and self.I == 0
+                self.interrupt_pending == "IRQ" and self.interrupt_inhibit == 0
             ):
                 debug_print(
                     f"CPU: Starting interrupt handling for {self.interrupt_pending}, PC=0x{self.PC:04X}"
                 )
-                self.interrupt_state = 2  # Mark interrupt pending
-                self.cycles = 6  # Interrupt handling takes 7 cycles (this is cycle 1)
-                return 1
+                self._handle_interrupt()
+                self.interrupt_pending = None
+                self.interrupt_state = 0
+                return 7  # Interrupt handling takes 7 cycles total
 
-        # If interrupt is pending and we've counted down, handle it
-        if self.interrupt_state == 2 and self.cycles == 0:
-            debug_print(
-                f"CPU: Executing interrupt handler for {self.interrupt_pending}"
-            )
-            self._handle_interrupt()
-            self.interrupt_state = 0
-            return 1
-
-        # Handle branch execution
-        if self.branch_pending:
-            self.PC = self.branch_target
-            self.branch_pending = False
-            return 1
-
-        # Fetch and decode new instruction
+        # Fetch and decode new instruction (following RustyNES pattern)
         old_pc = self.PC
         opcode = self.memory.read(self.PC)
         self.PC = (self.PC + 1) & 0xFFFF
 
-        # Get cycle count from lookup table for hardware accuracy
-        self.cycles = (
-            self.cycle_lookup[opcode] - 1
-        )  # -1 because we already used one cycle
+        # Get base cycle count from lookup table for hardware accuracy
+        base_cycles = self.cycle_lookup[opcode]
 
         if opcode not in self.instructions:
             print(f"Unknown opcode: 0x{opcode:02X} at PC: 0x{self.PC-1:04X}")
-            return 1
+            return base_cycles
 
         instruction, addressing_mode, length, _ = self.instructions[opcode]
 
@@ -865,35 +879,48 @@ class CPU:
                 f"CPU: Executing {instruction} at PC=0x{old_pc:04X}, opcode=0x{opcode:02X}, cycles={self.total_cycles}, length={length}"
             )
 
-        # Get operand and calculate address based on addressing mode
+        # Fetch operand (following RustyNES fetch_operand pattern)
         pc_before_address = self.PC
-        address = self._get_address_with_cycles(
+        address, page_crossing_penalty = self._get_address_with_page_crossing_info(
             addressing_mode, length - 1, instruction
         )
         pc_after_address = self.PC
 
         # Debug: Check if PC is advancing properly
         if old_pc == 0x8150 or old_pc == 0x8153:
+            address_str = f"{address:04X}" if address is not None else "0000"
             debug_print(
-                f"CPU: PC progression: {old_pc:04X} -> {pc_before_address:04X} -> {pc_after_address:04X}, addressing_mode={addressing_mode}, length={length}, address=0x{address:04X if address is not None else 0:04X}"
+                f"CPU: PC progression: {old_pc:04X} -> {pc_before_address:04X} -> {pc_after_address:04X}, addressing_mode={addressing_mode}, length={length}, address=0x{address_str}"
             )
 
-        # Optimized instruction execution using dispatch table
+        # Execute instruction (following RustyNES instruction dispatch pattern)
+        extra_cycles = 0
         if opcode in self.instruction_dispatch:
-            self.instruction_dispatch[opcode](address, addressing_mode)
+            extra_cycles = self.instruction_dispatch[opcode](address, addressing_mode)
         else:
             # Fallback to dynamic dispatch for unofficial opcodes
-            getattr(self, f"execute_{instruction.lower()}")(address, addressing_mode)
+            extra_cycles = getattr(self, f"execute_{instruction.lower()}")(
+                address, addressing_mode
+            )
+
+        # Handle return value from instruction execution
+        if extra_cycles is None:
+            extra_cycles = 0
 
         # Debug: Check if PC changed after instruction execution
         if old_pc == 0x8150 or old_pc == 0x8153:
             debug_print(f"CPU: PC after instruction execution: {self.PC:04X}")
 
-        # Prepare for branch instructions (they need special handling)
+        # Handle branch instructions with proper cycle calculation
+        branch_cycles = 0
         if instruction in ["BPL", "BMI", "BVC", "BVS", "BCC", "BCS", "BNE", "BEQ"]:
-            self._prepare_branch(instruction, address)
+            branch_cycles = self._prepare_branch(instruction, address)
 
-        return 1
+        # Return total cycles consumed by this complete instruction
+        total_cycles = (
+            base_cycles + extra_cycles + branch_cycles + page_crossing_penalty
+        )
+        return total_cycles
 
     def execute_instruction(self):
         """Legacy method - no longer used with integrated execution model"""
@@ -946,7 +973,7 @@ class CPU:
         self.interrupt_pending = None
 
     def _prepare_branch(self, instruction, address):
-        """Prepare branch instruction execution"""
+        """Prepare branch instruction execution - returns extra cycles"""
         # Get the condition for the branch
         conditions = {
             "BPL": self.N == 0,
@@ -959,50 +986,56 @@ class CPU:
             "BEQ": self.Z == 1,
         }
 
+        extra_cycles = 0
         if conditions.get(instruction, False):
             # Branch will be taken
             old_pc = self.PC
-            self.branch_target = address
-            self.branch_pending = True
+            self.PC = address
 
             # Add extra cycle for branch taken
-            self.cycles += 1
+            extra_cycles += 1
 
             # Add extra cycle if page boundary crossed
             if self._page_crossed(old_pc, address):
-                self.cycles += 1
+                extra_cycles += 1
+
+        return extra_cycles
 
     def _page_crossed(self, addr1, addr2):
         """Check if two addresses are on different pages"""
         return (addr1 & 0xFF00) != (addr2 & 0xFF00)
 
-    def _get_address_with_cycles(self, addressing_mode, operand_length, instruction):
-        """Get operand address with cycle-accurate page boundary handling"""
+    def _get_address_with_page_crossing_info(
+        self, addressing_mode, operand_length, instruction
+    ):
+        """Get operand address and return page crossing penalty separately"""
+        page_crossing_penalty = 0
+
         if addressing_mode == "implied" or addressing_mode == "accumulator":
             # Dummy read for implied instructions
             self.memory.read(self.PC)
-            return None
+            return None, 0
         elif addressing_mode == "immediate":
             addr = self.PC
             self.PC = (self.PC + 1) & 0xFFFF
-            return addr
+            return addr, 0
         elif addressing_mode == "zero_page":
             addr = self.memory.read(self.PC)
             self.PC = (self.PC + 1) & 0xFFFF
-            return addr
+            return addr, 0
         elif addressing_mode == "zero_page_x":
             addr = (self.memory.read(self.PC) + self.X) & 0xFF
             self.PC = (self.PC + 1) & 0xFFFF
-            return addr
+            return addr, 0
         elif addressing_mode == "zero_page_y":
             addr = (self.memory.read(self.PC) + self.Y) & 0xFF
             self.PC = (self.PC + 1) & 0xFFFF
-            return addr
+            return addr, 0
         elif addressing_mode == "absolute":
             low = self.memory.read(self.PC)
             high = self.memory.read(self.PC + 1)
             self.PC = (self.PC + 2) & 0xFFFF
-            return (high << 8) | low
+            return (high << 8) | low, 0
         elif addressing_mode == "absolute_x":
             low = self.memory.read(self.PC)
             high = self.memory.read(self.PC + 1)
@@ -1011,6 +1044,7 @@ class CPU:
             final_addr = (base_addr + self.X) & 0xFFFF
 
             # Check if page boundary crossed for read instructions
+            # Including unofficial NOPs that have page crossing penalties: $1C $3C $5C $7C $DC $FC
             if instruction in [
                 "LDA",
                 "LDX",
@@ -1021,13 +1055,14 @@ class CPU:
                 "ADC",
                 "SBC",
                 "CMP",
+                "NOP",  # Some unofficial NOPs have page crossing penalties
             ]:
                 if self._page_crossed(base_addr, final_addr):
                     # Perform dummy read at wrong address
                     self.memory.read(
                         (base_addr & 0xFF00) | ((base_addr + self.X) & 0xFF)
                     )
-                    self.cycles += 1
+                    page_crossing_penalty = 1
             elif instruction in [
                 "STA",
                 "STX",
@@ -1042,7 +1077,7 @@ class CPU:
                 # Write instructions always do dummy read
                 self.memory.read((base_addr & 0xFF00) | ((base_addr + self.X) & 0xFF))
 
-            return final_addr
+            return final_addr, page_crossing_penalty
         elif addressing_mode == "absolute_y":
             low = self.memory.read(self.PC)
             high = self.memory.read(self.PC + 1)
@@ -1051,6 +1086,7 @@ class CPU:
             final_addr = (base_addr + self.Y) & 0xFFFF
 
             # Check if page boundary crossed for read instructions
+            # Including unofficial instructions that have page crossing penalties: $BB $BF
             if instruction in [
                 "LDA",
                 "LDX",
@@ -1061,24 +1097,25 @@ class CPU:
                 "ADC",
                 "SBC",
                 "CMP",
+                "LAX",  # Unofficial instruction $BB $BF
             ]:
                 if self._page_crossed(base_addr, final_addr):
                     # Perform dummy read at wrong address
                     self.memory.read(
                         (base_addr & 0xFF00) | ((base_addr + self.Y) & 0xFF)
                     )
-                    self.cycles += 1
+                    page_crossing_penalty = 1
             elif instruction in ["STA", "STX", "STY"]:
                 # Write instructions always do dummy read
                 self.memory.read((base_addr & 0xFF00) | ((base_addr + self.Y) & 0xFF))
 
-            return final_addr
+            return final_addr, page_crossing_penalty
         elif addressing_mode == "relative":
             offset = self.memory.read(self.PC)
             self.PC = (self.PC + 1) & 0xFFFF
             if offset & 0x80:  # Negative
                 offset = offset - 256
-            return (self.PC + offset) & 0xFFFF
+            return (self.PC + offset) & 0xFFFF, 0
         elif addressing_mode == "indirect":
             low = self.memory.read(self.PC)
             high = self.memory.read(self.PC + 1)
@@ -1091,14 +1128,14 @@ class CPU:
             else:
                 target_low = self.memory.read(addr)
                 target_high = self.memory.read(addr + 1)
-            return (target_high << 8) | target_low
+            return (target_high << 8) | target_low, 0
         elif addressing_mode == "indexed_indirect":
             base = self.memory.read(self.PC)
             self.PC = (self.PC + 1) & 0xFFFF
             addr = (base + self.X) & 0xFF
             low = self.memory.read(addr)
             high = self.memory.read((addr + 1) & 0xFF)
-            return (high << 8) | low
+            return (high << 8) | low, 0
         elif addressing_mode == "indirect_indexed":
             base = self.memory.read(self.PC)
             self.PC = (self.PC + 1) & 0xFFFF
@@ -1108,6 +1145,7 @@ class CPU:
             final_addr = (base_addr + self.Y) & 0xFFFF
 
             # Check if page boundary crossed for read instructions
+            # Including unofficial instruction $B3 (LAX)
             if instruction in [
                 "LDA",
                 "LDX",
@@ -1118,18 +1156,30 @@ class CPU:
                 "ADC",
                 "SBC",
                 "CMP",
+                "LAX",  # Unofficial instruction $B3
             ]:
                 if self._page_crossed(base_addr, final_addr):
                     # Perform dummy read at wrong address
                     self.memory.read(
                         (base_addr & 0xFF00) | ((base_addr + self.Y) & 0xFF)
                     )
-                    self.cycles += 1
+                    page_crossing_penalty = 1
             elif instruction in ["STA", "STX", "STY"]:
                 # Write instructions always do dummy read
                 self.memory.read((base_addr & 0xFF00) | ((base_addr + self.Y) & 0xFF))
 
-            return final_addr
+            return final_addr, page_crossing_penalty
+
+        return None, 0
+
+    def _get_address_with_cycles(self, addressing_mode, operand_length, instruction):
+        """Legacy method - get operand address with cycle-accurate page boundary handling"""
+        address, page_crossing_penalty = self._get_address_with_page_crossing_info(
+            addressing_mode, operand_length, instruction
+        )
+        # Add the penalty to cycles for compatibility with old execution model
+        self.cycles += page_crossing_penalty
+        return address
 
     def trigger_interrupt(self, interrupt_type):
         """Trigger an interrupt (NMI, IRQ, RST)"""
@@ -1146,10 +1196,10 @@ class CPU:
             # When an NMI occurs, ignore any pending IRQ (fix for Super Mario Bros)
             self.I = 1  # Set interrupt disable flag to block IRQs
         elif interrupt_type == "IRQ" and self.interrupt_pending != "NMI":
-            # IRQ only if no NMI is pending and interrupts are enabled
-            if self.I == 0:  # Only set if interrupt flag is clear
-                self.interrupt_pending = interrupt_type
-            else:
+            # IRQ only if no NMI is pending
+            # Always set the IRQ pending, but it will only be processed if interrupt_inhibit == 0
+            self.interrupt_pending = interrupt_type
+            if self.interrupt_inhibit == 1:
                 debug_print(f"CPU: IRQ ignored - interrupts disabled (I={self.I})")
 
     def add_dma_cycles(self, cycles):
@@ -1273,12 +1323,16 @@ class CPU:
         value = self.memory.read(operand)
         self.A = value
         self.set_zero_negative(self.A)
-        
+
         # Debug: Log LDA reads from specific addresses that might be causing loops
         if operand == 0x2002 or operand == 0x2000 or operand == 0x2001:
-            debug_print(f"CPU: LDA from PPU register 0x{operand:04X} = 0x{value:02X}, A=0x{self.A:02X}")
+            debug_print(
+                f"CPU: LDA from PPU register 0x{operand:04X} = 0x{value:02X}, A=0x{self.A:02X}"
+            )
         elif self.total_cycles % 1000 == 0:
-            debug_print(f"CPU: LDA from 0x{operand:04X} = 0x{value:02X}, A=0x{self.A:02X}")
+            debug_print(
+                f"CPU: LDA from 0x{operand:04X} = 0x{value:02X}, A=0x{self.A:02X}"
+            )
 
     def execute_ldx(self, operand, addressing_mode):
         self.X = self.memory.read(operand)
@@ -1332,9 +1386,28 @@ class CPU:
         self.push_stack(self.get_status_byte() | 0x30)
 
     def execute_plp(self, operand, addressing_mode):
+        """Pull Processor flags with I flag delay"""
         # Hardware-accurate: ignore bits 4 and 5 from stack
         status = self.pop_stack()
-        self.set_status_byte((status & ~0x30) | (self.get_status_byte() & 0x30))
+        old_i = self.I
+
+        # Extract the new I flag value from the pulled status
+        new_i = (status >> 2) & 1
+
+        # Apply all flags except I flag immediately
+        temp_status = self.get_status_byte()
+        temp_status = (status & ~0x34) | (
+            temp_status & 0x30
+        )  # Keep bits 4,5, exclude I flag
+        self.set_status_byte(temp_status)
+
+        # Check if I flag changed - if so, delay takes effect
+        if new_i != old_i:
+            self.interrupt_delay_pending = True
+            self.interrupt_delay_value = new_i
+        else:
+            # No I flag change, apply immediately
+            self.I = new_i
 
     def execute_adc(self, operand, addressing_mode):
         # Optimized: single read operation
@@ -1561,15 +1634,21 @@ class CPU:
         self.push_stack(self.PC & 0xFF)
         # Hardware-accurate: B and bit 5 are always set when pushed by BRK
         self.push_stack(self.get_status_byte() | 0x30)
-        self.I = 1
+        self.I = 1  # BRK sets I flag immediately (no delay like CLI/SEI)
+        self.interrupt_inhibit = 1  # Also update the effective interrupt state
         low = self.memory.read(0xFFFE)
         high = self.memory.read(0xFFFF)
         self.PC = (high << 8) | low
 
     def execute_rti(self, operand, addressing_mode):
+        """Return from Interrupt - I flag takes effect immediately"""
         # Hardware-accurate: ignore bits 4 and 5 from stack
         status = self.pop_stack()
         self.set_status_byte((status & ~0x30) | (self.get_status_byte() & 0x30))
+
+        # RTI affects interrupt inhibition immediately (no delay)
+        self.interrupt_inhibit = self.I
+
         low = self.pop_stack()
         high = self.pop_stack()
         self.PC = (high << 8) | low
@@ -1581,10 +1660,14 @@ class CPU:
         self.C = 1
 
     def execute_cli(self, operand, addressing_mode):
-        self.I = 0
+        """Clear Interrupt flag with one-instruction delay"""
+        self.interrupt_delay_pending = True  # Delay takes effect next instruction
+        self.interrupt_delay_value = 0
 
     def execute_sei(self, operand, addressing_mode):
-        self.I = 1
+        """Set Interrupt flag with one-instruction delay"""
+        self.interrupt_delay_pending = True  # Delay takes effect next instruction
+        self.interrupt_delay_value = 1
 
     def execute_clv(self, operand, addressing_mode):
         self.V = 0

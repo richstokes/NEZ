@@ -92,18 +92,8 @@ class Memory:
             )  # Bit 6 often set on real hardware
             return self.bus
         elif addr == 0x4017:
-            # Controller 2 - same logic as controller 1
-            if self.strobe:
-                # When strobe is high, always return first bit (A button)
-                result = self.controller2 & 1
-            elif self.controller2_index > 7:
-                result = 1
-            else:
-                result = (self.controller2_shift >> self.controller2_index) & 1
-                self.controller2_index += 1
-
-            # Preserve upper bits from open bus
-            self.bus = (self.bus & 0xE0) | (result & 0x01) | 0x40
+            # APU Frame Counter (write-only) / Controller 2
+            # Most tests expect this to return open bus, not controller data
             return self.bus
         elif addr < 0x4020:
             # APU and I/O registers - return open bus for unimplemented

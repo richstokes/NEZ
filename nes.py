@@ -69,23 +69,24 @@ class NES:
         """Execute one NES step - cycle-accurate like reference"""
         # Handle pending NMI
         if self.nmi_pending:
+            debug_print(f"NES: step() - NMI pending detected, delay={self.nmi_delay}")
             if self.nmi_delay > 0:
                 self.nmi_delay -= 1
+                debug_print(f"NES: NMI delay decremented to {self.nmi_delay}")
             else:
                 debug_print(f"NES: Handling NMI, calling handle_nmi()")
                 self.handle_nmi()
                 self.nmi_pending = False
+                debug_print(f"NES: NMI handled, nmi_pending set to False")
 
         # Step CPU (returns number of cycles used)
         cpu_cycles = self.cpu.step()
         self.cpu_cycles += cpu_cycles
 
         # Step PPU (3 PPU cycles per CPU cycle for NTSC)
-        # Reference implementation: execute_ppu() called cpu_cycles * 3 times
+        # RustyNES pattern: execute_ppu() for cpu_cycles * 3 times
         for _ in range(cpu_cycles * 3):
             self.ppu.step()
-
-            # VBlank NMI detection now happens immediately in PPU when flag is set
             self.ppu_cycles += 1
 
         # Step APU (1 APU cycle per CPU cycle)
@@ -141,6 +142,8 @@ class NES:
 
     def handle_nmi(self):
         """Handle Non-Maskable Interrupt"""
+        debug_print(f"NES: handle_nmi() called, CPU PC=0x{self.cpu.PC:04X}")
+
         # Clear any pending IRQ - NMI should take precedence
         self.cpu.interrupt_pending = None
 
@@ -152,6 +155,7 @@ class NES:
             self.cpu.trigger_interrupt("NMI")
         else:
             # Fallback for old CPU implementation
+            debug_print(f"NES: CPU doesn't have trigger_interrupt, using fallback")
             # Push PC and status to stack
             self.cpu.push_stack((self.cpu.PC >> 8) & 0xFF)
             self.cpu.push_stack(self.cpu.PC & 0xFF)
@@ -181,6 +185,7 @@ class NES:
 
         # Mark NMI as pending - will be handled in next CPU step
         self.nmi_pending = True
+        debug_print(f"NES: NMI pending set to True, will be handled in next step")
 
         # Clear any pending IRQ to prioritize NMI
         if (

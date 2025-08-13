@@ -434,9 +434,34 @@ class PPU:
         # Visible scanlines (0-239)
         if self.scanline < self.VISIBLE_SCANLINES:
             if self.cycle > 0 and self.cycle <= self.VISIBLE_DOTS:
+                # Debug: Check rendering conditions
+                if (
+                    self.frame >= 70
+                    and self.frame <= 72
+                    and self.scanline == 0
+                    and self.cycle == 1
+                ):
+                    debug_print(
+                        f"PPU step: frame={self.frame}, scanline={self.scanline}, cycle={self.cycle}, mask=0x{self.mask:02x}"
+                    )
+                    debug_print(
+                        f"PPU step: SHOW_BG={self.SHOW_BG}, SHOW_SPRITE={self.SHOW_SPRITE}, mask&check={self.mask & (self.SHOW_BG | self.SHOW_SPRITE)}"
+                    )
+
                 # Render pixel if rendering is enabled
                 if self.mask & (self.SHOW_BG | self.SHOW_SPRITE):
                     self.render_pixel()
+                else:
+                    # Debug: Why isn't rendering enabled?
+                    if (
+                        self.frame >= 70
+                        and self.frame <= 72
+                        and self.scanline == 0
+                        and self.cycle == 1
+                    ):
+                        debug_print(
+                            f"PPU step: Rendering NOT enabled, mask=0x{self.mask:02x}, required={(self.SHOW_BG | self.SHOW_SPRITE):02x}"
+                        )
 
                 # Handle horizontal scrolling - based on reference implementation
                 # Calculate fine_x like reference: ((ppu->x + x) % 8)
@@ -565,6 +590,12 @@ class PPU:
 
     def render_pixel(self):
         """Render a single pixel - based on reference implementation"""
+        # ALWAYS debug - to confirm this function is called
+        if self.frame > 30 and self.scanline == 0 and self.cycle <= 3:
+            debug_print(
+                f"render_pixel: frame={self.frame}, scanline={self.scanline}, cycle={self.cycle}"
+            )
+
         x = self.cycle - 1
         y = self.scanline
 
@@ -600,12 +631,6 @@ class PPU:
                     sprite_priority = (sprite_info >> 5) & 1
                     sprite_zero = (sprite_info >> 6) & 1
 
-        # Debug output for first few pixels to see what's being rendered
-        if self.frame >= 32 and self.frame < 34 and y < 3 and x < 3:
-            debug_print(
-                f"Pixel ({x},{y}): bg={bg_pixel}, sprite={sprite_pixel}, mask=0x{self.mask:02x}"
-            )
-
         # Determine final pixel color
         palette_addr = 0
 
@@ -629,6 +654,24 @@ class PPU:
         # Get final color from palette (two-stage lookup like reference)
         color_index = self.palette_ram[palette_addr] & 0x3F
         color = self.nes_palette[color_index]
+
+        # Debug output for first few pixels to see what's being rendered
+        if self.frame >= 34 and self.frame < 36 and y < 3 and x < 10:
+            debug_print(
+                f"Pixel ({x},{y}): bg={bg_pixel}, sprite={sprite_pixel}, mask=0x{self.mask:02x}, palette_addr=0x{palette_addr:02X}, final_color=0x{color:08X}"
+            )
+
+        # Additional debug to confirm render_pixel is being called
+        if self.frame == 71 and y == 0 and x == 0:
+            debug_print(
+                f"render_pixel called at frame {self.frame}, mask=0x{self.mask:02x}, bg_enabled={bool(self.mask & self.SHOW_BG)}, sprite_enabled={bool(self.mask & self.SHOW_SPRITE)}"
+            )
+
+        # Debug output for first few pixels to see what's being rendered
+        if self.frame >= 34 and self.frame < 36 and y < 3 and x < 10:
+            debug_print(
+                f"Pixel ({x},{y}): bg={bg_pixel}, sprite={sprite_pixel}, mask=0x{self.mask:02x}, palette_addr=0x{palette_addr:02X}, final_color=0x{color:08X}"
+            )
 
         # Store pixel in screen buffer
         self.screen[y * 256 + x] = color
