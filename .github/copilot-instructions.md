@@ -19,3 +19,4 @@ We are writing a NES emulator in python.
 # References
 Use https://github.com/ObaraEmmanuel/NES as a reference for how the code should work. 
 
+https://github.com/bokuweb/rustynes/tree/master/src also has good info.
