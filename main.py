@@ -8,6 +8,8 @@ import os
 import time
 import sdl2
 import sdl2.ext
+from PIL import Image
+import io
 from nes import NES
 from performance_config import apply_optimizations
 from utils import debug_print
@@ -112,8 +114,96 @@ class NEZEmulator:
         print("SDL2 initialized successfully")
         return True
 
+    def take_screenshot(self, filename="exit_screenshot.png"):
+        """Take a screenshot of the current SDL window state and save as PNG/JPEG"""
+        try:
+            # Get the size of the window
+            width, height = self.window_width, self.window_height
+            
+            # First, make sure we have the latest frame rendered to the screen
+            # Clear and render the current frame
+            sdl2.SDL_SetRenderDrawColor(self.renderer, 0, 0, 0, 255)
+            sdl2.SDL_RenderClear(self.renderer)
+            
+            if self.texture:
+                sdl2.SDL_RenderCopy(self.renderer, self.texture, None, None)
+            
+            # Present to ensure the frame is in the framebuffer
+            sdl2.SDL_RenderPresent(self.renderer)
+            
+            # Now create a surface to hold the pixel data
+            surface = sdl2.SDL_CreateRGBSurfaceWithFormat(
+                0, width, height, 32, sdl2.SDL_PIXELFORMAT_RGBA8888
+            )
+            
+            if not surface:
+                print(f"Failed to create surface for screenshot: {sdl2.SDL_GetError()}")
+                return False
+            
+            # Read pixels directly from the current renderer
+            # On Metal/macOS, this needs to happen after SDL_RenderPresent
+            result = sdl2.SDL_RenderReadPixels(
+                self.renderer,
+                None,  # Read entire viewport
+                sdl2.SDL_PIXELFORMAT_RGBA8888,
+                surface.contents.pixels,
+                surface.contents.pitch
+            )
+            
+            if result != 0:
+                print(f"Failed to read pixels: {sdl2.SDL_GetError()}")
+                sdl2.SDL_FreeSurface(surface)
+                return False
+            
+            # Convert SDL surface to PIL Image
+            # Get raw pixel data from the surface
+            import ctypes
+            pixels_ptr = surface.contents.pixels
+            pitch = surface.contents.pitch
+            
+            # Create a bytes buffer from the pixel data using ctypes
+            # Cast the pixels pointer to a byte array
+            pixel_buffer = ctypes.cast(pixels_ptr, ctypes.POINTER(ctypes.c_ubyte * (height * pitch)))
+            pixel_data = bytes(pixel_buffer.contents)
+            
+            # Create PIL Image from the pixel data
+            # SDL uses RGBA format with proper pitch handling
+            img = Image.frombytes('RGBA', (width, height), pixel_data, 'raw', 'RGBA', pitch)
+            
+            # Determine output format from filename extension
+            output_filename = filename
+            if filename.endswith('.bmp'):
+                output_filename = filename.replace('.bmp', '.png')
+            
+            # Save the image
+            if output_filename.lower().endswith('.jpg') or output_filename.lower().endswith('.jpeg'):
+                # Convert RGBA to RGB for JPEG
+                rgb_img = Image.new('RGB', img.size, (0, 0, 0))
+                rgb_img.paste(img, mask=img.split()[3] if len(img.split()) == 4 else None)
+                rgb_img.save(output_filename, 'JPEG', quality=95)
+            else:
+                # Default to PNG
+                if not output_filename.lower().endswith('.png'):
+                    output_filename += '.png'
+                img.save(output_filename, 'PNG')
+            
+            print(f"Screenshot saved as: {output_filename}")
+            
+            # Clean up the surface
+            sdl2.SDL_FreeSurface(surface)
+            
+            return True
+            
+        except Exception as e:
+            print(f"Error taking screenshot: {e}")
+            return False
+
     def cleanup_sdl(self):
         """Clean up SDL2 resources"""
+        # Take a screenshot before cleaning up
+        if self.renderer and self.window:
+            self.take_screenshot("exit_screenshot.png")
+        
         if hasattr(self, "audio_device") and self.audio_device:
             sdl2.SDL_CloseAudioDevice(self.audio_device)
         if self.texture:
@@ -147,6 +237,8 @@ class NEZEmulator:
         elif key == sdl2.SDLK_r or key == sdl2.SDLK_F5:  # Reset like reference
             self.nes.reset()
             print("Reset NES")
+        elif key == sdl2.SDLK_F12:  # Manual screenshot
+            self.take_screenshot(f"screenshot_{int(time.time())}.png")
         elif key == sdl2.SDLK_j:  # A button (match reference: J)
             self.controller_state["A"] = True
         elif key == sdl2.SDLK_k:  # B button (match reference: K)
@@ -260,7 +352,9 @@ class NEZEmulator:
         print("  Right Shift: Select")
         print("  Enter: Start")
         print("  R: Reset")
+        print("  F12: Take screenshot")
         print("  Escape: Quit")
+        print("\nNote: A screenshot will be saved automatically when you exit the emulator.")
 
         frame_count = 0
         start_time = time.time()
