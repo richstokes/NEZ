@@ -463,3 +463,8 @@ class Cartridge:
             # CHR RAM (if no CHR ROM) - only writable if CHR RAM
             if self.chr_rom_size == 0 and addr < len(self.chr_rom):
                 self.chr_rom[addr] = value
+                # Debug CHR RAM writes that might affect sprite 0 hit detection
+                if hasattr(self, 'nes') and self.nes and hasattr(self.nes, 'ppu') and self.nes.ppu:
+                    frame = self.nes.ppu.frame
+                    if frame >= 0 and frame < 50 and value != 0:
+                        print(f"CHR RAM Write: addr=0x{addr:04X}, value=0x{value:02X}, frame={frame}")

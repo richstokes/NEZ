@@ -54,6 +54,8 @@ class NES:
             # Reconfigure PPU for the detected region
             self.ppu = PPU(self.memory, self.region)
             self.memory.set_ppu(self.ppu)
+            # CRITICAL: Reset the PPU to proper state after recreation
+            self.ppu.reset()
             
             # Reconfigure APU for the detected region
             self.apu = APU(self, pal_mode=(self.region == 'PAL'))
@@ -97,6 +99,9 @@ class NES:
         # Step CPU (returns number of cycles used)
         cpu_cycles = self.cpu.step()
         self.cpu_cycles += cpu_cycles
+
+        # Update PPU open bus decay with elapsed CPU cycles
+        self.ppu.update_bus_decay(cpu_cycles)
 
         # Step PPU with correct ratio for region
         if self.region == 'PAL':

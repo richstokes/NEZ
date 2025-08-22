@@ -850,11 +850,18 @@ class CPU:
                     f"CPU: Interrupt inhibit updated at boundary: I={self.I}, interrupt_inhibit={self.interrupt_inhibit}"
                 )
 
+        # Fetch opcode first to check for BRK special case
+        old_pc = self.PC
+        opcode = self.memory.read(self.PC)
+        self.PC = (self.PC + 1) & 0xFFFF
+
         # Handle pending interrupts at the start of a new instruction
         # NMI is never masked and always processed immediately
         # IRQ can only be taken when interrupt_inhibit == 0 AND there was no delay active
         # when this instruction started (ensures one instruction executes after CLI)
-        if self.interrupt_pending and self.interrupt_state == 0:
+        # Special case: If NMI is pending and current instruction is BRK, let BRK execute first
+        # and handle NMI during BRK execution (for BRK signature behavior)
+        if self.interrupt_pending and self.interrupt_state == 0 and opcode != 0x00:
             if (self.interrupt_pending == "NMI") or (
                 self.interrupt_pending == "IRQ" and self.interrupt_inhibit == 0 and not delay_was_active
             ):
@@ -868,11 +875,6 @@ class CPU:
 
         # Note whether a delay was already pending before this instruction began
         pre_delay_counter = self.interrupt_delay_counter
-
-        # Fetch and decode new instruction (following RustyNES pattern)
-        old_pc = self.PC
-        opcode = self.memory.read(self.PC)
-        self.PC = (self.PC + 1) & 0xFFFF
 
         # Get base cycle count from lookup table for hardware accuracy
         base_cycles = self.cycle_lookup[opcode]
