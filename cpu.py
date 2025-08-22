@@ -41,8 +41,9 @@ class CPU:
 
         # CLI/SEI/PLP latency tracking for interrupt flag changes
         self.interrupt_inhibit = 1  # Effective interrupt disable (tracks delay)
-        self.interrupt_delay_pending = False  # True if I flag change is delayed
-        self.interrupt_delay_value = 0  # Value to apply when delay completes
+        self.interrupt_delay_counter = 0  # Number of full instructions to wait before applying to interrupt_inhibit
+        self.interrupt_delay_pending = False  # Back-compat flag for tests
+        self.interrupt_delay_value = None  # Back-compat: target I value after delay
 
         # Branch state tracking
         self.branch_pending = False
@@ -806,8 +807,9 @@ class CPU:
 
         # Initialize interrupt latency state
         self.interrupt_inhibit = self.I  # Initialize to match I flag
+        self.interrupt_delay_counter = 0
         self.interrupt_delay_pending = False
-        self.interrupt_delay_value = 0
+        self.interrupt_delay_value = None
 
     def step(self):
         """Execute one CPU cycle with hardware-accurate timing"""
@@ -834,17 +836,27 @@ class CPU:
 
     def run_instruction(self):
         """Execute complete instruction following RustyNES model - returns total cycles consumed"""
-        # Apply any pending interrupt flag changes from previous instruction
-        if self.interrupt_delay_pending:
-            self.I = self.interrupt_delay_value
-            self.interrupt_inhibit = self.interrupt_delay_value
-            self.interrupt_delay_pending = False
+        # Store whether there was a delay active before this instruction started
+        delay_was_active = self.interrupt_delay_counter > 0
+        
+        # Apply any deferred interrupt recognition changes from previous instruction FIRST,
+        # then check for pending interrupts. This matches 6502 order at instruction boundary.
+        if self.interrupt_delay_counter > 0:
+            self.interrupt_delay_counter -= 1
+            self.interrupt_delay_pending = self.interrupt_delay_counter > 0
+            if self.interrupt_delay_counter == 0:
+                self.interrupt_inhibit = self.I
+                debug_print(
+                    f"CPU: Interrupt inhibit updated at boundary: I={self.I}, interrupt_inhibit={self.interrupt_inhibit}"
+                )
 
         # Handle pending interrupts at the start of a new instruction
-        # Use interrupt_inhibit for IRQ checking (accounts for CLI/SEI/PLP delay)
+        # NMI is never masked and always processed immediately
+        # IRQ can only be taken when interrupt_inhibit == 0 AND there was no delay active
+        # when this instruction started (ensures one instruction executes after CLI)
         if self.interrupt_pending and self.interrupt_state == 0:
-            if self.interrupt_pending == "NMI" or (
-                self.interrupt_pending == "IRQ" and self.interrupt_inhibit == 0
+            if (self.interrupt_pending == "NMI") or (
+                self.interrupt_pending == "IRQ" and self.interrupt_inhibit == 0 and not delay_was_active
             ):
                 debug_print(
                     f"CPU: Starting interrupt handling for {self.interrupt_pending}, PC=0x{self.PC:04X}"
@@ -853,6 +865,9 @@ class CPU:
                 self.interrupt_pending = None
                 self.interrupt_state = 0
                 return 7  # Interrupt handling takes 7 cycles total
+
+        # Note whether a delay was already pending before this instruction began
+        pre_delay_counter = self.interrupt_delay_counter
 
         # Fetch and decode new instruction (following RustyNES pattern)
         old_pc = self.PC
@@ -874,6 +889,8 @@ class CPU:
             or instruction in ["RTI", "LDA", "STA", "JMP", "BNE", "BEQ", "BCC", "BCS"]
             or old_pc == 0x8150
             or old_pc == 0x8153
+            or old_pc == 0x8227
+            or old_pc == 0x822E
         ):
             debug_print(
                 f"CPU: Executing {instruction} at PC=0x{old_pc:04X}, opcode=0x{opcode:02X}, cycles={self.total_cycles}, length={length}"
@@ -887,7 +904,7 @@ class CPU:
         pc_after_address = self.PC
 
         # Debug: Check if PC is advancing properly
-        if old_pc == 0x8150 or old_pc == 0x8153:
+        if old_pc == 0x8150 or old_pc == 0x8153 or old_pc == 0x8227 or old_pc == 0x822E:
             address_str = f"{address:04X}" if address is not None else "0000"
             debug_print(
                 f"CPU: PC progression: {old_pc:04X} -> {pc_before_address:04X} -> {pc_after_address:04X}, addressing_mode={addressing_mode}, length={length}, address=0x{address_str}"
@@ -920,6 +937,13 @@ class CPU:
         total_cycles = (
             base_cycles + extra_cycles + branch_cycles + page_crossing_penalty
         )
+
+        # Deferred interrupt recognition already applied at boundary above.
+        # Keep these legacy flags in sync for tests but do not re-apply.
+        if pre_delay_counter > 0:
+            # No-op here; the actual decrement happened at entry.
+            pass
+
         return total_cycles
 
     def execute_instruction(self):
@@ -945,20 +969,20 @@ class CPU:
             debug_print(f"CPU: No valid interrupt to handle: {self.interrupt_pending}")
             return
 
-        # Push PC and status register to stack
-        self.push_stack((self.PC >> 8) & 0xFF)
-        self.push_stack(self.PC & 0xFF)
+        # Push PC and status register to stack in correct 6502 order
+        # 6502 pushes: high byte of PC, low byte of PC, then status
+        self.push_stack((self.PC >> 8) & 0xFF)  # High byte first
+        self.push_stack(self.PC & 0xFF)         # Low byte second
 
-        # Status handling is different for NMI vs IRQ
-        status = self.get_status_byte()
-        if self.interrupt_pending == "NMI":
-            status &= 0xEF  # Clear B flag for NMI
-        elif self.interrupt_pending == "IRQ":
-            status |= 0x10  # Set B flag for IRQ
-        self.push_stack(status)
+        # Hardware-accurate: Both NMI and IRQ clear the B flag when pushing status
+        # The B flag (bit 4) and bit 5 are cleared for hardware interrupts
+        status = self.get_status_byte() & 0xCF  # Clear bits 4 and 5 for interrupts
+        status |= 0x20  # Set bit 5 (unused, but always set)
+        self.push_stack(status)                  # Status last
 
-        # Set interrupt disable flag
+        # Set interrupt disable flag (takes effect immediately)
         self.I = 1
+        self.interrupt_inhibit = 1
 
         # Jump to interrupt vector
         low = self.memory.read(vector_addr)
@@ -1190,17 +1214,15 @@ class CPU:
         # NMI takes precedence over IRQ
         if interrupt_type == "NMI":
             # NMI always takes precedence regardless of previous interrupt
-            self.interrupt_pending = interrupt_type
-            # For NMI we clear interrupt status immediately to ensure it's handled
+            self.interrupt_pending = "NMI"
+            # Ensure it will be handled at the next instruction boundary
             self.interrupt_state = 0
-            # When an NMI occurs, ignore any pending IRQ (fix for Super Mario Bros)
-            self.I = 1  # Set interrupt disable flag to block IRQs
+            # Do not modify the I flag here; precedence is handled when servicing
         elif interrupt_type == "IRQ" and self.interrupt_pending != "NMI":
-            # IRQ only if no NMI is pending
-            # Always set the IRQ pending, but it will only be processed if interrupt_inhibit == 0
-            self.interrupt_pending = interrupt_type
+            # Latch IRQ. It will only be serviced when interrupts are enabled (after CLI/PLP latency)
+            self.interrupt_pending = "IRQ"
             if self.interrupt_inhibit == 1:
-                debug_print(f"CPU: IRQ ignored - interrupts disabled (I={self.I})")
+                debug_print(f"CPU: IRQ pending but masked (I={self.I})")
 
     def add_dma_cycles(self, cycles):
         """Add DMA cycles that will delay CPU execution"""
@@ -1335,7 +1357,8 @@ class CPU:
             )
 
     def execute_ldx(self, operand, addressing_mode):
-        self.X = self.memory.read(operand)
+        value = self.memory.read(operand)
+        self.X = value
         self.set_zero_negative(self.X)
 
     def execute_ldy(self, operand, addressing_mode):
@@ -1394,20 +1417,24 @@ class CPU:
         # Extract the new I flag value from the pulled status
         new_i = (status >> 2) & 1
 
-        # Apply all flags except I flag immediately
+        # Apply all flags immediately, including I visibility, but preserve bits 4 and 5
         temp_status = self.get_status_byte()
-        temp_status = (status & ~0x34) | (
-            temp_status & 0x30
-        )  # Keep bits 4,5, exclude I flag
+        temp_status = (status & ~0x30) | (temp_status & 0x30)
         self.set_status_byte(temp_status)
 
-        # Check if I flag changed - if so, delay takes effect
+        # If I changed, recognition is delayed one instruction
         if new_i != old_i:
+            self.I = new_i  # Visible immediately
+            # One-instruction latency, applied at next boundary
+            self.interrupt_delay_counter = 1
             self.interrupt_delay_pending = True
-            self.interrupt_delay_value = new_i
+            self.interrupt_delay_value = self.I
+            debug_print(
+                f"CPU: PLP changed I -> {self.I}, scheduling IRQ mask update after 1 instruction"
+            )
         else:
-            # No I flag change, apply immediately
             self.I = new_i
+            self.interrupt_delay_value = self.I
 
     def execute_adc(self, operand, addressing_mode):
         # Optimized: single read operation
@@ -1606,14 +1633,19 @@ class CPU:
             self.PC = operand
 
     def execute_bne(self, operand, addressing_mode):
-        # Don't set PC directly - let _prepare_branch handle it
-        pass
+        # BNE branches if Z flag is 0 (not equal)
+        if self.Z == 0:
+            self.PC = operand
 
     def execute_beq(self, operand, addressing_mode):
-        # Don't set PC directly - let _prepare_branch handle it
-        pass
+        # BEQ branches if Z flag is 1 (equal)
+        if self.Z == 1:
+            self.PC = operand
 
     def execute_jmp(self, operand, addressing_mode):
+        # Debug JMP loops
+        if operand == 0x8057:
+            debug_print(f"CPU: JMP infinite loop detected at PC=0x{operand:04X}")
         self.PC = operand
 
     def execute_jsr(self, operand, addressing_mode):
@@ -1628,27 +1660,55 @@ class CPU:
         self.PC = (((high << 8) | low) + 1) & 0xFFFF
 
     def execute_brk(self, operand, addressing_mode):
-        # BRK is a 2-byte instruction
+        # BRK is a 2-byte instruction; increment PC to skip the padding byte
         self.PC = (self.PC + 1) & 0xFFFF
+        
+        # Push PC and status to stack
         self.push_stack((self.PC >> 8) & 0xFF)
         self.push_stack(self.PC & 0xFF)
-        # Hardware-accurate: B and bit 5 are always set when pushed by BRK
-        self.push_stack(self.get_status_byte() | 0x30)
-        self.I = 1  # BRK sets I flag immediately (no delay like CLI/SEI)
-        self.interrupt_inhibit = 1  # Also update the effective interrupt state
-        low = self.memory.read(0xFFFE)
-        high = self.memory.read(0xFFFF)
-        self.PC = (high << 8) | low
+        
+        # If an NMI is pending at this exact moment, NMI takes precedence over BRK.
+        # This matches hardware behavior verified by cpu_interrupts_v2 2-nmi_and_brk.
+        if self.interrupt_pending == "NMI":
+            # Special 6502 quirk: If NMI and BRK coincide, vector to NMI but push BRK signature (B flag set)
+            # This matches cpu_interrupts_v2 expectations.
+            self.push_stack(self.get_status_byte() | 0x30)
+            
+            # Set interrupt disable immediately
+            self.I = 1
+            self.interrupt_inhibit = 1
+            
+            # Vector to NMI
+            low = self.memory.read(0xFFFA)
+            high = self.memory.read(0xFFFB)
+            self.PC = (high << 8) | low
+            
+            # Clear the pending NMI now that it's been serviced
+            self.interrupt_pending = None
+        else:
+            # Software interrupt path (BRK behaves like IRQ using the IRQ/BRK vector)
+            # Hardware-accurate: B and bit 5 are set when pushed by BRK
+            self.push_stack(self.get_status_byte() | 0x30)
+            
+            # BRK sets I flag immediately (no delay like CLI/SEI)
+            self.I = 1
+            self.interrupt_inhibit = 1
+            
+            # Jump to IRQ/BRK vector
+            low = self.memory.read(0xFFFE)
+            high = self.memory.read(0xFFFF)
+            self.PC = (high << 8) | low
 
     def execute_rti(self, operand, addressing_mode):
         """Return from Interrupt - I flag takes effect immediately"""
-        # Hardware-accurate: ignore bits 4 and 5 from stack
+        # Hardware-accurate: Pop status first (last pushed by interrupt)
         status = self.pop_stack()
         self.set_status_byte((status & ~0x30) | (self.get_status_byte() & 0x30))
 
         # RTI affects interrupt inhibition immediately (no delay)
         self.interrupt_inhibit = self.I
 
+        # Pop return address: low byte first (pushed second), then high byte (pushed first)
         low = self.pop_stack()
         high = self.pop_stack()
         self.PC = (high << 8) | low
@@ -1660,14 +1720,34 @@ class CPU:
         self.C = 1
 
     def execute_cli(self, operand, addressing_mode):
-        """Clear Interrupt flag with one-instruction delay"""
-        self.interrupt_delay_pending = True  # Delay takes effect next instruction
-        self.interrupt_delay_value = 0
+        """Clear Interrupt flag with one-instruction latency on recognition.
+        Status bit I is updated immediately; interrupt_inhibit updates after next instruction.
+        """
+        # Update visible I flag immediately
+        self.I = 0
+        # Defer the effective recognition change by one instruction
+        # Apply at the next instruction boundary
+        self.interrupt_delay_counter = 1
+        self.interrupt_delay_pending = True
+        self.interrupt_delay_value = self.I
+        debug_print(
+            f"CPU: CLI executed, I={self.I}, will enable IRQs after 1 instruction"
+        )
 
     def execute_sei(self, operand, addressing_mode):
-        """Set Interrupt flag with one-instruction delay"""
-        self.interrupt_delay_pending = True  # Delay takes effect next instruction
-        self.interrupt_delay_value = 1
+        """Set Interrupt flag with one-instruction latency on recognition.
+        Status bit I is updated immediately; interrupt_inhibit updates after next instruction.
+        """
+        # Update visible I flag immediately
+        self.I = 1
+        # Defer the effective recognition change by one instruction
+        # Apply at the next instruction boundary
+        self.interrupt_delay_counter = 1
+        self.interrupt_delay_pending = True
+        self.interrupt_delay_value = self.I
+        debug_print(
+            f"CPU: SEI executed, I={self.I}, will mask IRQs after 1 instruction"
+        )
 
     def execute_clv(self, operand, addressing_mode):
         self.V = 0

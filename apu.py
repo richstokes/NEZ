@@ -9,7 +9,12 @@ Implements the 2A03 APU with support for:
 - Audio output via SDL2
 """
 
-import sdl2
+try:
+    import sdl2
+    SDL2_AVAILABLE = True
+except ImportError:
+    SDL2_AVAILABLE = False
+    
 import ctypes
 import struct
 
@@ -496,9 +501,12 @@ class DMCChannel:
         self.bytes_remaining = self.sample_length
 
     def set_period(self, index):
-        """Set the timer period from lookup table"""
+        """Set the timer period from lookup table - match reference implementation"""
         periods = self.DMC_PERIODS_PAL if self.pal_mode else self.DMC_PERIODS_NTSC
-        self.timer.period = periods[index & 0xF]
+        # Reference implementation uses rate-1, so we need to compensate
+        # since our Divider triggers after period+1 cycles on first run
+        self.timer.period = periods[index & 0xF] - 1
+        self.timer.counter = self.timer.period
 
     def output(self):
         """Get the current output value"""
@@ -600,6 +608,8 @@ class FrameSequencer:
                         # Only trigger IRQ if not already flagged (prevent IRQ spam)
                         if not self.irq_flag:
                             self.irq_flag = True
+                            from utils import debug_print
+                            debug_print(f"APU: Frame IRQ asserted at seq.cycles={self.cycles}, cpu_cycles={apu.nes.cpu_cycles}")
                             # Trigger CPU IRQ
                             if hasattr(apu.nes, "cpu") and hasattr(
                                 apu.nes.cpu, "trigger_interrupt"
@@ -828,6 +838,11 @@ class APU:
         ):
             return
 
+        if not SDL2_AVAILABLE:
+            # If SDL2 is not available, just clear the buffer
+            self.audio_buffer.clear()
+            return
+            
         try:
             # Convert to bytes using struct
             audio_data = struct.pack(f"{len(self.audio_buffer)}h", *self.audio_buffer)
@@ -853,7 +868,8 @@ class APU:
         except Exception as e:
             print(f"APU: Error in _queue_audio: {e}")
             # Attempt recovery - clear error and reinitialize
-            sdl2.SDL_ClearError()
+            if SDL2_AVAILABLE:
+                sdl2.SDL_ClearError()
             if hasattr(self, "init_audio_stream"):
                 self.init_audio_stream(self.audio_stream)
 
@@ -879,6 +895,9 @@ class APU:
             status |= 0x80
 
         # Clear frame IRQ flag
+        if self.frame_sequencer.irq_flag:
+            from utils import debug_print
+            debug_print(f"APU: $4015 read, clearing frame IRQ flag at cpu_cycles={self.nes.cpu_cycles}")
         self.frame_sequencer.irq_flag = False
         return status
 
@@ -990,6 +1009,8 @@ class APU:
             self.dmc.sample_length = (value << 4) | 1
 
         elif addr == 0x4015:  # APU status/enable
+            from utils import debug_print
+            debug_print(f"APU: $4015 write value=0x{value:02X} at cpu_cycles={self.nes.cpu_cycles}")
             self.pulse1.enabled = bool(value & 0x01)
             self.pulse2.enabled = bool(value & 0x02)
             self.triangle.enabled = bool(value & 0x04)
@@ -1015,9 +1036,13 @@ class APU:
                 self.dmc.bytes_remaining = 0
 
         elif addr == 0x4017:  # Frame sequencer
+            from utils import debug_print
+            debug_print(f"APU: $4017 write value=0x{value:02X} at cpu_cycles={self.nes.cpu_cycles}")
             self.frame_sequencer.mode = (value >> 7) & 1
             self.frame_sequencer.irq_inhibit = bool(value & 0x40)
             if self.frame_sequencer.irq_inhibit:
+                if self.frame_sequencer.irq_flag:
+                    debug_print(f"APU: $4017 irq_inhibit=1, clearing frame IRQ flag at cpu_cycles={self.nes.cpu_cycles}")
                 self.frame_sequencer.irq_flag = False
 
             # Reset sequencer with immediate frame execution (reference implementation)

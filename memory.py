@@ -213,6 +213,7 @@ class Cartridge:
         self.has_battery = False
         self.has_trainer = False
         self.four_screen = False
+        self.region = 'NTSC'  # Default region, will be detected from ROM
 
         # Nametable mapping for mirroring like reference implementation
         # Maps nametable index to VRAM offset
@@ -251,6 +252,42 @@ class Cartridge:
             self.four_screen = (flags6 >> 3) & 1
 
             self.mapper = (flags6 >> 4) | (flags7 & 0xF0)
+            
+            # Region detection
+            # Check if this is NES 2.0 format
+            if (flags7 & 0x0C) == 0x08:
+                # NES 2.0 - would need to read byte 12 for region
+                # For now, default to NTSC
+                self.region = 'NTSC'
+            else:
+                # iNES 1.0 - check byte 9 for PAL flag if available
+                # We need to read more header bytes for this
+                current_pos = f.tell()
+                f.seek(0)  # Go back to start
+                full_header = f.read(16)
+                f.seek(current_pos)  # Return to original position
+                
+                if len(full_header) > 9:
+                    # Byte 9, bit 0: 0=NTSC, 1=PAL
+                    if full_header[9] & 1:
+                        self.region = 'PAL'
+                    else:
+                        self.region = 'NTSC'
+                else:
+                    self.region = 'NTSC'
+            
+            # Fallback: Check filename for region indicators
+            rom_name = self.rom_path.upper()
+            if ('(E)' in rom_name or '(EUROPE)' in rom_name or 
+                '(PAL)' in rom_name or '(EU)' in rom_name or
+                '(GERMANY)' in rom_name or '(FRANCE)' in rom_name or
+                '(SPAIN)' in rom_name or '(ITALY)' in rom_name or
+                '(AUSTRALIA)' in rom_name):
+                self.region = 'PAL'
+            elif '(U)' in rom_name or '(USA)' in rom_name or '(US)' in rom_name:
+                self.region = 'NTSC'
+            elif '(J)' in rom_name or '(JAPAN)' in rom_name or '(JPN)' in rom_name:
+                self.region = 'NTSC'
 
             # Skip trainer if present
             if self.has_trainer:
@@ -289,6 +326,7 @@ class Cartridge:
         print(f"CHR ROM: {self.chr_rom_size * 8}KB")
         print(f"Mapper: {self.mapper}")
         print(f"Mirroring: {'Vertical' if self.mirroring else 'Horizontal'}")
+        print(f"Region: {self.region}")
 
         # Debug CHR ROM data - check various locations
         if len(self.chr_rom) >= 0x1250:

@@ -14,9 +14,10 @@ class NES:
     def __init__(self):
         # Initialize components
         self.memory = Memory()
-        self.ppu = PPU(self.memory)
+        self.region = 'NTSC'  # Default region, will be updated when ROM loads
+        self.ppu = PPU(self.memory, self.region)
         self.cpu = CPU(self.memory)
-        self.apu = APU(self)
+        self.apu = APU(self, pal_mode=False)  # Will be reconfigured when ROM loads
 
         # Connect components
         self.memory.set_ppu(self.ppu)
@@ -41,10 +42,24 @@ class NES:
         self.running = False
 
     def load_cartridge(self, rom_path):
-        """Load a ROM cartridge"""
+        """Load a ROM cartridge and configure region"""
         try:
             cartridge = Cartridge(rom_path)
             self.memory.set_cartridge(cartridge)
+            
+            # Configure components for detected region
+            self.region = cartridge.region
+            print(f"Configuring NES for {self.region} region")
+            
+            # Reconfigure PPU for the detected region
+            self.ppu = PPU(self.memory, self.region)
+            self.memory.set_ppu(self.ppu)
+            
+            # Reconfigure APU for the detected region
+            self.apu = APU(self, pal_mode=(self.region == 'PAL'))
+            self.memory.set_apu(self.apu)
+            
+            print(f"ROM loaded - Region: {self.region}")
             return True
         except Exception as e:
             print(f"Error loading ROM: {e}")
@@ -66,7 +81,7 @@ class NES:
         print("NES Reset")
 
     def step(self):
-        """Execute one NES step - cycle-accurate like reference"""
+        """Execute one NES step - cycle-accurate for both NTSC and PAL"""
         # Handle pending NMI
         if self.nmi_pending:
             debug_print(f"NES: step() - NMI pending detected, delay={self.nmi_delay}")
@@ -83,11 +98,31 @@ class NES:
         cpu_cycles = self.cpu.step()
         self.cpu_cycles += cpu_cycles
 
-        # Step PPU (3 PPU cycles per CPU cycle for NTSC)
-        # RustyNES pattern: execute_ppu() for cpu_cycles * 3 times
-        for _ in range(cpu_cycles * 3):
-            self.ppu.step()
-            self.ppu_cycles += 1
+        # Step PPU with correct ratio for region
+        if self.region == 'PAL':
+            # PAL: 3.2 PPU cycles per CPU cycle (16/5 ratio)
+            # Track fractional cycles for accurate timing
+            if not hasattr(self, 'pal_cycle_counter'):
+                self.pal_cycle_counter = 0
+            
+            # Always do 3 PPU cycles
+            for _ in range(cpu_cycles * 3):
+                self.ppu.step()
+                self.ppu_cycles += 1
+            
+            # Add extra PPU cycle every 5 CPU cycles (for the 0.2 fractional part)
+            self.pal_cycle_counter += cpu_cycles
+            extra_cycles = self.pal_cycle_counter // 5
+            self.pal_cycle_counter %= 5
+            
+            for _ in range(extra_cycles):
+                self.ppu.step()
+                self.ppu_cycles += 1
+        else:
+            # NTSC: 3 PPU cycles per CPU cycle
+            for _ in range(cpu_cycles * 3):
+                self.ppu.step()
+                self.ppu_cycles += 1
 
         # Step APU (1 APU cycle per CPU cycle)
         for _ in range(cpu_cycles):
@@ -144,8 +179,8 @@ class NES:
         """Handle Non-Maskable Interrupt"""
         debug_print(f"NES: handle_nmi() called, CPU PC=0x{self.cpu.PC:04X}")
 
-        # Clear any pending IRQ - NMI should take precedence
-        self.cpu.interrupt_pending = None
+        # Do not clear pending IRQs here. NMI takes precedence naturally at the CPU,
+        # and any latched IRQ should remain pending to be serviced after NMI if allowed.
 
         # Trigger NMI through the CPU's new interrupt system
         if hasattr(self.cpu, "trigger_interrupt"):
@@ -187,12 +222,6 @@ class NES:
         self.nmi_pending = True
         debug_print(f"NES: NMI pending set to True, will be handled in next step")
 
-        # Clear any pending IRQ to prioritize NMI
-        if (
-            hasattr(self.cpu, "interrupt_pending")
-            and self.cpu.interrupt_pending == "IRQ"
-        ):
-            self.cpu.interrupt_pending = None
 
         # The delay is important for accurate timing
         # NMI is detected at the end of the current instruction
