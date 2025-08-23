@@ -18,6 +18,18 @@ class CPU:
         self.PC = 0  # Program Counter
         self.S = 0xFD  # Stack Pointer
 
+        # KIL opcodes set for quick detection
+        self.kil_opcodes = {
+            0x02, 0x12, 0x22, 0x32, 0x42, 0x52, 0x62, 0x72, 0x92, 0xB2, 0xD2, 0xF2
+        }
+
+        # Jam reporting guard to avoid spamming
+        self.jam_reported_at = None
+
+        # Small trace history ring buffer for last instructions
+        self.trace_history = []  # list of dict entries
+        self.max_trace_history = 16
+
         # Status flags (P register)
         self.C = 0  # Carry flag
         self.Z = 0  # Zero flag
@@ -869,7 +881,14 @@ class CPU:
 
         # Now fetch the opcode for the next instruction
         opcode = self.memory.read(self.PC)
+        fetched_pc = self.PC  # PC of this opcode (before increment)
         self.PC = (self.PC + 1) & 0xFFFF
+
+        # If we fetch a KIL opcode or hit the suspicious PC, dump context once
+        if opcode in self.kil_opcodes or fetched_pc == 0xAE0B:
+            if self.jam_reported_at != fetched_pc:
+                self._dump_jam_context(fetched_pc, opcode)
+                self.jam_reported_at = fetched_pc
 
         # Note whether a delay was already pending before this instruction began
         pre_delay_counter = self.interrupt_delay_counter
@@ -944,6 +963,12 @@ class CPU:
             # No-op here; the actual decrement happened at entry.
             pass
 
+        # Record trace after executing instruction
+        try:
+            self._record_trace(old_pc, opcode, instruction, addressing_mode, address, self.PC)
+        except Exception as e:
+            debug_print(f"CPU TRACE ERROR: {e}")
+
         return total_cycles
 
     def execute_instruction(self):
@@ -951,6 +976,88 @@ class CPU:
         debug_print("Executing LEGACY instruction...")
         # This method is kept for compatibility but is no longer called
         pass
+
+    def _record_trace(self, pc, opcode, instruction, addressing_mode, address, next_pc):
+        """Record a compact trace entry for debugging"""
+        entry = {
+            'cycles': self.total_cycles,
+            'pc': pc,
+            'opcode': opcode,
+            'mnemonic': instruction,
+            'addr_mode': addressing_mode,
+            'operand_addr': address,
+            'next_pc': next_pc,
+            'A': self.A,
+            'X': self.X,
+            'Y': self.Y,
+            'S': self.S,
+            'P': self.get_status_byte(),
+        }
+        self.trace_history.append(entry)
+        if len(self.trace_history) > self.max_trace_history:
+            self.trace_history.pop(0)
+
+    def _dump_jam_context(self, pc, opcode):
+        """Dump detailed context when a jam/KIL or suspicious PC is hit"""
+        try:
+            print("=== CPU JAM CONTEXT ===")
+            print(f"At PC=0x{pc:04X}, opcode=0x{opcode:02X}")
+            print(
+                f"A=0x{self.A:02X} X=0x{self.X:02X} Y=0x{self.Y:02X} S=0x{self.S:02X} P=0x{self.get_status_byte():02X} (N={self.N} V={self.V} D={self.D} I={self.I} Z={self.Z} C={self.C})"
+            )
+            # Show a small hex window around PC using raw PRG mapping if available
+            window = []
+            start = (pc - 8) & 0xFFFF
+            for offs in range(0, 17):
+                addr = (start + offs) & 0xFFFF
+                try:
+                    byte = self.memory.read(addr)
+                except Exception:
+                    byte = 0
+                window.append((addr, byte))
+            print(
+                "Nearby bytes (via memory.read): "
+                + " ".join([f"{a:04X}:{b:02X}" for a, b in window])
+            )
+
+            # Verify PRG ROM mapping
+            prg_info = ""
+            rom_byte = None
+            prg_off = None
+            cart = getattr(self.memory, 'cartridge', None)
+            if cart and pc >= 0x8000:
+                try:
+                    if cart.mapper == 0:
+                        if cart.prg_rom_size == 1:
+                            prg_off = (pc - 0x8000) & 0x3FFF
+                        else:
+                            prg_off = pc - 0x8000
+                    else:
+                        prg_off = (pc - 0x8000) % len(cart.prg_rom) if len(cart.prg_rom) > 0 else None
+                    if prg_off is not None and 0 <= prg_off < len(cart.prg_rom):
+                        rom_byte = cart.prg_rom[prg_off]
+                    prg_info = (
+                        f"Mapper={cart.mapper}, PRG_ROM_SIZE={len(cart.prg_rom)} bytes, prg_off=0x{(prg_off or 0):04X}, ROM[off]=0x{(rom_byte or 0):02X}"
+                    )
+                except Exception as e:
+                    prg_info = f"PRG mapping check failed: {e}"
+            if prg_info:
+                print("PRG mapping: " + prg_info)
+                if rom_byte is not None:
+                    match = "MATCH" if rom_byte == opcode else "MISMATCH"
+                    print(f"Fetch vs ROM byte: 0x{opcode:02X} vs 0x{rom_byte:02X} => {match}")
+
+            # Dump a short backtrace of previous instructions
+            if self.trace_history:
+                print("Last instructions:")
+                for e in self.trace_history[-10:]:
+                    addr_str = f"0x{(e['operand_addr'] if e['operand_addr'] is not None else 0):04X}"
+                    print(
+                        f"  cyc={e['cycles']:>8} PC=0x{e['pc']:04X} OP=0x{e['opcode']:02X} {e['mnemonic']} {e['addr_mode']} -> next=0x{e['next_pc']:04X} A={e['A']:02X} X={e['X']:02X} Y={e['Y']:02X} S={e['S']:02X} P={e['P']:02X} addr={addr_str}"
+                    )
+            print("=== END JAM CONTEXT ===")
+        except Exception as e:
+            print(f"ERROR dumping jam context: {e}")
 
     def _handle_interrupt(self):
         """Handle pending interrupt"""
