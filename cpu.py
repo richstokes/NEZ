@@ -1467,10 +1467,19 @@ class CPU:
         self.set_zero_negative(self.A)
 
     def execute_and(self, operand, addressing_mode):
-        # Optimized: single read operation
+        # Read value from memory (operand is always an address)
         value = self.memory.read(operand)
+        
+        # Debug: Show what we're ANDing for specific addresses
+        if operand == 0x8154:
+            debug_print(f"CPU: AND #$40 (testing sprite 0 hit): A=0x{self.A:02X} & 0x{value:02X} -> 0x{self.A & value:02X}")
+        
         self.A = self.A & value
         self.set_zero_negative(self.A)
+        
+        # Debug: Show result flags
+        if operand == 0x8154:
+            debug_print(f"CPU: AND result: A=0x{self.A:02X}, Z={self.Z}, N={self.N}")
 
     def execute_eor(self, operand, addressing_mode):
         # Optimized: single read operation

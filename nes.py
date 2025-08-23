@@ -61,7 +61,11 @@ class NES:
             self.apu = APU(self, pal_mode=(self.region == 'PAL'))
             self.memory.set_apu(self.apu)
             
+            # CRITICAL: Reset the CPU to read the reset vector and set PC
+            self.cpu.reset()
+            
             print(f"ROM loaded - Region: {self.region}")
+            print(f"CPU reset - PC now: 0x{self.cpu.PC:04X}")
             return True
         except Exception as e:
             print(f"Error loading ROM: {e}")
