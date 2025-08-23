@@ -491,8 +491,9 @@ class PPU:
         """Execute one PPU cycle"""
         # Visible scanlines (0-239)
         if self.scanline < self.VISIBLE_SCANLINES:
-            # Ensure sprite evaluation happens at dot 1 even when also rendering pixels
-            if self.cycle == 1 and (self.mask & self.SHOW_SPRITE):
+            # Evaluate sprites for this scanline at dot 1 regardless of SHOW_SPRITE state
+            # The real PPU runs sprite evaluation irrespective of PPUMASK show bits.
+            if self.cycle == 1:
                 self.evaluate_sprites()
             if self.cycle > 0 and self.cycle <= self.VISIBLE_DOTS:
                 # Debug: Check rendering conditions
