@@ -1,5 +1,8 @@
 .DS_Store
 exit_screenshot.*
+test_*.py
+debug_*.py
+
 
 # Byte-compiled / optimized / DLL files
 __pycache__/
