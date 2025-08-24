@@ -44,3 +44,7 @@ pipenv run python main.py mario.nes
 | Enter | Start |
 | R | Reset System |
 | Escape | Quit |
+
+## Contributions
+
+Contributions are welcome! Feel free to throw up a PR if you know of any changes that could help!
