@@ -6,6 +6,12 @@ Right now it can _kind_ of load some games/ROMs, but theres a ton of corruption 
 
 I had assumed that being a 40 year old, incredibly well documented platform, that the LLMs may have been able to build this relatively easily. So far it's been a nightmare, but I'm stubborn so going to keep nudging this along.
 
+## Screenshots
+
+<p align="center">
+    <img src="screenshots/c1.png" alt="Screenshot of NEZ running" width="50%">
+</p>
+
 &nbsp;
 
 ## Installation
@@ -35,4 +41,3 @@ pipenv run python main.py mario.nes
 | Enter | Start |
 | R | Reset System |
 | Escape | Quit |
-
