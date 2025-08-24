@@ -24,6 +24,7 @@ I had assumed that being a 40 year old, incredibly well documented platform, tha
 - GitHub Copilot can't auto run commands, so have to repeatedly click to allow it to grep logs, etc. It looks like they might be fixing this soon.
 - The "lower" models (GPT <5, the free models with copilot, gemini) are often lazy and like to either propose changes vaguely, and not actually implement them even though they are in agent mode. Or they don't consider the full context, often deleting large swathes of code with placeholders like `# Rest of code here`. Sometimes I catch this, but I'm mostly not reviewing the code. Instead, commit often and revert if it seems to have regressed. I'm sure the spaghetti factor here is horrendous as a result.
 - The lower models often like to duplicate functions. Again it seems that they are not reviewing/considering the full context of the codebase (even when asked). Often times I've had to tell it to go and consolidate duplicate/similar methods. Similarly they have a tendency to create placeholder or stub methods.
+- As a result, using non-premium models is basically pointless / will result in a mess and set you back.
 
 ## Installation
 
