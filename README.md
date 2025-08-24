@@ -9,6 +9,9 @@ I had assumed that being a 40 year old, incredibly well documented platform, tha
 ## Screenshots
 
 <p align="center">
+    <img src="screenshots/c0.png" alt="Screenshot of NEZ running" width="50%">
+</p>
+<p align="center">
     <img src="screenshots/c1.png" alt="Screenshot of NEZ running" width="50%">
 </p>
 
