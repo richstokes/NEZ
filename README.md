@@ -28,7 +28,7 @@ I had assumed that being a 40 year old, incredibly well documented platform, tha
 
 ## Installation
 
-The environment is already set up with pipenv. Just activate it:
+Using pipenv:
 
 ```bash
 pipenv install
