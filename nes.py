@@ -41,99 +41,96 @@ class NES:
         # Running state
         self.running = False
 
-    def load_cartridge(self, rom_path):
-        """Load a ROM cartridge and configure region"""
+    def load_rom(self, rom_path: str):
+        """Load a ROM file and initialize cartridge-dependent state.
+        Returns True on success, False on failure.
+        """
         try:
-            cartridge = Cartridge(rom_path)
-            self.memory.set_cartridge(cartridge)
-            
-            # Configure components for detected region
-            self.region = cartridge.region
-            print(f"Configuring NES for {self.region} region")
-            
-            # Reconfigure PPU for the detected region
-            self.ppu = PPU(self.memory, self.region)
-            self.memory.set_ppu(self.ppu)
-            # CRITICAL: Reset the PPU to proper state after recreation
-            self.ppu.reset()
-            
-            # Reconfigure APU for the detected region
-            self.apu = APU(self, pal_mode=(self.region == 'PAL'))
-            self.memory.set_apu(self.apu)
-            
-            # CRITICAL: Reset the CPU to read the reset vector and set PC
-            self.cpu.reset()
-            
-            print(f"ROM loaded - Region: {self.region}")
-            print(f"CPU reset - PC now: 0x{self.cpu.PC:04X}")
-            return True
+            cart = Cartridge(rom_path)
         except Exception as e:
-            print(f"Error loading ROM: {e}")
+            debug_print(f"NES: Failed to load ROM '{rom_path}': {e}")
             return False
 
-    def load_rom(self, rom_path):
-        """Load a ROM file - alias for load_cartridge"""
-        return self.load_cartridge(rom_path)
+        # Attach cartridge
+        self.memory.set_cartridge(cart)
+        cart.memory = self.memory  # back-reference for mappers if needed
+
+        # Update region from cartridge detection (NTSC/PAL) and reconfigure subsystems
+        self.region = getattr(cart, 'region', 'NTSC')
+        self.ppu.region = self.region
+        pal_mode = (self.region == 'PAL')
+        if hasattr(self.apu, 'set_region'):
+            try:
+                self.apu.set_region(pal_mode)
+            except Exception:
+                pass
+
+        # Reset CPU/PPU to power-on state using vectors from cartridge PRG
+        self.reset()
+        debug_print(f"NES: ROM '{rom_path}' loaded (mapper={cart.mapper}, region={self.region})")
+        return True
 
     def reset(self):
-        """Reset the NES"""
-        self.cpu.reset()
-        self.ppu.reset()
-        self.apu.reset()
-        self.cpu_cycles = 0
-        self.ppu_cycles = 0
+        """Reset CPU, PPU, and APU state (power-on like)."""
+        # CPU Reset Vector
+        low = self.memory.read(0xFFFC)
+        high = self.memory.read(0xFFFD)
+        pc = (high << 8) | low
+        self.cpu.PC = pc
+        self.cpu.S = 0xFD
+        self.cpu.I = 1
+        self.cpu.C = self.cpu.Z = self.cpu.D = self.cpu.B = self.cpu.V = self.cpu.N = 0
+        self.cpu.cycles = 0
+        self.cpu.total_cycles = 0
+        # Clear PPU timing/frame state
+        self.ppu.frame = 0
+        self.ppu.scanline = 0
+        self.ppu.cycle = 0
+        self.ppu.render = False
+        # Clear any pending NMI
         self.nmi_pending = False
         self.nmi_delay = 0
-        print("NES Reset")
+        # APU basic reset if available
+        if hasattr(self.apu, 'reset'):
+            try:
+                self.apu.reset()
+            except Exception:
+                pass
+        debug_print(f"NES: Reset complete, PC=0x{pc:04X}, region={self.region}")
 
     def step(self):
-        """Execute one NES step - cycle-accurate for both NTSC and PAL"""
-        # Handle pending NMI
+        """Execute one NES step (one CPU cycle + corresponding PPU/APU cycles)"""
+        # Handle pending NMI timing
         if self.nmi_pending:
-            debug_print(f"NES: step() - NMI pending detected, delay={self.nmi_delay}")
             if self.nmi_delay > 0:
                 self.nmi_delay -= 1
-                debug_print(f"NES: NMI delay decremented to {self.nmi_delay}")
             else:
-                debug_print(f"NES: Handling NMI, calling handle_nmi()")
                 self.handle_nmi()
                 self.nmi_pending = False
-                debug_print(f"NES: NMI handled, nmi_pending set to False")
 
-        # Step CPU (returns number of cycles used)
+        # Execute one CPU cycle (CPU internally tracks remaining instruction cycles)
         cpu_cycles = self.cpu.step()
         self.cpu_cycles += cpu_cycles
 
-        # Update PPU open bus decay with elapsed CPU cycles
+        # Update PPU open bus decay
         self.ppu.update_bus_decay(cpu_cycles)
 
-        # Step PPU with correct ratio for region
+        # PPU cycles: 3 per CPU cycle (NTSC) or 3.2 average (PAL)
         if self.region == 'PAL':
-            # PAL: 3.2 PPU cycles per CPU cycle (16/5 ratio)
-            # Track fractional cycles for accurate timing
             if not hasattr(self, 'pal_cycle_counter'):
                 self.pal_cycle_counter = 0
-            
-            # Always do 3 PPU cycles
             for _ in range(cpu_cycles * 3):
-                self.ppu.step()
-                self.ppu_cycles += 1
-            
-            # Add extra PPU cycle every 5 CPU cycles (for the 0.2 fractional part)
+                self.ppu.step(); self.ppu_cycles += 1
             self.pal_cycle_counter += cpu_cycles
-            extra_cycles = self.pal_cycle_counter // 5
+            extra = self.pal_cycle_counter // 5
             self.pal_cycle_counter %= 5
-            
-            for _ in range(extra_cycles):
-                self.ppu.step()
-                self.ppu_cycles += 1
+            for _ in range(extra):
+                self.ppu.step(); self.ppu_cycles += 1
         else:
-            # NTSC: 3 PPU cycles per CPU cycle
             for _ in range(cpu_cycles * 3):
-                self.ppu.step()
-                self.ppu_cycles += 1
+                self.ppu.step(); self.ppu_cycles += 1
 
-        # Step APU (1 APU cycle per CPU cycle)
+        # APU: 1 per CPU cycle
         for _ in range(cpu_cycles):
             self.apu.step()
 

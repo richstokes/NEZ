@@ -330,7 +330,8 @@ class NEZEmulator:
         if not self.initialize_sdl():
             return False
 
-        if not self.nes.load_cartridge(rom_path):
+        # Updated: use NES.load_rom instead of deprecated load_cartridge
+        if not self.nes.load_rom(rom_path):
             self.cleanup_sdl()
             return False
 

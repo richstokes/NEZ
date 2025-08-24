@@ -59,6 +59,8 @@ class Envelope:
         if self.start:
             self.start = False
             self.step = 15
+            # Keep divider's period in sync with current envelope period
+            self.divider.period = self.period
             self.divider.counter = self.period
         elif self.divider.clock():
             if self.step > 0:
@@ -83,10 +85,12 @@ class Sweep:
         if self.divider.clock():
             if self.enabled and self.shift > 0 and not pulse.muted:
                 target_period = self.target_period(pulse)
-                if target_period <= 0x7FF and pulse.timer.period >= 8:
+                if 8 <= target_period <= 0x7FF and pulse.timer.period >= 8:
                     pulse.timer.period = target_period
 
         if self.reload:
+            # Keep divider's period in sync with current sweep period
+            self.divider.period = self.period
             self.divider.counter = self.period
             self.reload = False
 
@@ -164,7 +168,7 @@ class PulseChannel:
             self.muted = True
         elif self.sweep.enabled and self.sweep.shift > 0:
             target = self.sweep.target_period(self)
-            self.muted = target > 0x7FF
+            self.muted = (target > 0x7FF) or (target < 8)
         else:
             self.muted = False
 
@@ -263,7 +267,12 @@ class TriangleChannel:
 
     def output(self):
         """Get the current output value"""
-        if not self.enabled or self.length_counter == 0 or self.timer.period < 2:
+        if (
+            not self.enabled
+            or self.length_counter == 0
+            or self.timer.period < 2
+            or self.linear_counter == 0
+        ):
             return 0
         return self.TRIANGLE_SEQUENCE[self.sequence_step]
 
@@ -353,6 +362,8 @@ class NoiseChannel:
         """Set the timer period from lookup table"""
         periods = self.NOISE_PERIODS_PAL if self.pal_mode else self.NOISE_PERIODS_NTSC
         self.timer.period = periods[index & 0xF]
+        # Synchronize counter to new period to avoid spurious extra ticks
+        self.timer.counter = self.timer.period
 
     def output(self):
         """Get the current output value"""
@@ -470,7 +481,8 @@ class DMCChannel:
             if self.memory:
                 # Add DMA cycles like reference implementation: apu->emulator->cpu.dma_cycles += 3;
                 if hasattr(self.memory, "nes") and hasattr(self.memory.nes, "cpu"):
-                    self.memory.nes.cpu.add_dma_cycles(3)
+                    if hasattr(self.memory.nes.cpu, "add_dma_cycles"):
+                        self.memory.nes.cpu.add_dma_cycles(3)
 
                 self.sample_buffer = self.memory.read(self.current_address)
                 self.sample_buffer_empty = False
@@ -708,13 +720,14 @@ class APU:
         # Frame sequencer with PAL support
         self.frame_sequencer = FrameSequencer(pal_mode)
 
+        # CPU cycle parity (0=even, 1=odd) for timers clocking
+        self._cpu_cycle_parity = 0
+
         # Audio output
         self.sample_rate = 48000
         self.audio_buffer = []
         self.audio_stream = None
-        self.cycles_per_sample = 1789773.0 / self.sample_rate  # NTSC timing
-        if pal_mode:
-            self.cycles_per_sample = 1662607.0 / self.sample_rate  # PAL timing
+        self.cycles_per_sample = (1662607.0 if pal_mode else 1789773.0) / self.sample_rate
         self.cycle_accumulator = 0.0
 
         # Mixer lookup tables
@@ -754,7 +767,7 @@ class APU:
         ):
             # Make sure we're producing samples
             self.sample_rate = 48000
-            self.frame_sample_count = self.sample_rate // 60  # 60 Hz refresh rate
+            self.frame_sample_count = self.sample_rate // (50 if self.pal_mode else 60)
             # Initialize audio buffer if not already done
             if not hasattr(self, "audio_buffer") or self.audio_buffer is None:
                 self.audio_buffer = []
@@ -762,32 +775,30 @@ class APU:
             self.audio_enabled = True
             print(f"APU: Audio initialized with stream {self.audio_stream}")
             # Ensure we're generating the correct number of samples per frame
-            self.cycles_per_sample = (
-                1789773 / self.sample_rate
-            )  # NES CPU clock rate / sample rate
+            cpu_clock = 1662607.0 if self.pal_mode else 1789773.0
+            self.cycles_per_sample = cpu_clock / self.sample_rate  # NES CPU clock rate / sample rate
 
     def step(self):
-        """Step the APU by one CPU cycle - optimized"""
-        # Reduce function call overhead by combining operations
-        # Clock all timers in one pass
-        self.pulse1.clock_timer()
-        self.pulse2.clock_timer()
+        """Step the APU by one CPU cycle - optimized and timing-correct"""
+        # Toggle CPU cycle parity each step (APU timers clock on odd CPU cycles)
+        self._cpu_cycle_parity ^= 1
+
+        # Triangle timer clocks every CPU cycle (subject to its own linear/length gating)
         self.triangle.clock_timer()
 
-        # Clock noise and DMC every other cycle - use CPU cycles for tracking
-        if hasattr(self.nes, 'cpu_cycles'):
-            if not (self.nes.cpu_cycles & 1):
-                self.noise.clock_timer()
-                self.dmc.clock_timer()
-        else:
-            # Fallback - always clock
-            self.noise.clock_timer()
-            self.dmc.clock_timer()
+        # DMC timer clocks every CPU cycle (rate table is in CPU cycles)
+        self.dmc.clock_timer()
 
-        # Clock frame sequencer less frequently
+        # Pulse and Noise timers clock on odd CPU cycles (CPU/2)
+        if self._cpu_cycle_parity:
+            self.pulse1.clock_timer()
+            self.pulse2.clock_timer()
+            self.noise.clock_timer()
+
+        # Frame sequencer clocks every CPU cycle
         self.frame_sequencer.clock(self)
 
-        # Generate audio sample with reduced frequency
+        # Generate audio sample at the configured rate
         self.cycle_accumulator += 1.0
         if self.cycle_accumulator >= self.cycles_per_sample:
             self.cycle_accumulator -= self.cycles_per_sample
@@ -894,11 +905,13 @@ class APU:
         if self.dmc.irq_flag:
             status |= 0x80
 
-        # Clear frame IRQ flag
+        # Clear IRQ flags on read as per hardware behavior
         if self.frame_sequencer.irq_flag:
             from utils import debug_print
             debug_print(f"APU: $4015 read, clearing frame IRQ flag at cpu_cycles={self.nes.cpu_cycles}")
         self.frame_sequencer.irq_flag = False
+        # DMC IRQ flag also clears on $4015 read
+        self.dmc.irq_flag = False
         return status
 
     def write_register(self, addr, value):
@@ -916,6 +929,7 @@ class APU:
             self.pulse1.sweep.negate = bool(value & 0x08)
             self.pulse1.sweep.shift = value & 7
             self.pulse1.sweep.reload = True
+            self.pulse1.sweep.divider.period = self.pulse1.sweep.period
 
         elif addr == 0x4002:  # Pulse 1 timer low
             self.pulse1.timer.period = (self.pulse1.timer.period & 0x700) | value
@@ -927,8 +941,9 @@ class APU:
             )
             if self.pulse1.enabled:
                 self.pulse1.length_counter = self.LENGTH_COUNTER_TABLE[value >> 3]
-            # Reset envelope step like reference implementation
+            # Reset/reload envelope as per hardware
             self.pulse1.envelope.step = 15
+            self.pulse1.envelope.start = True
             self.pulse1.duty_step = 0
             self.pulse1.update_mute()
 
@@ -938,6 +953,7 @@ class APU:
             self.pulse2.envelope.loop = bool(value & 0x20)
             self.pulse2.constant_volume = bool(value & 0x10)
             self.pulse2.envelope.period = value & 0x0F
+            self.pulse2.envelope.divider.period = self.pulse2.envelope.period
 
         elif addr == 0x4005:  # Pulse 2 sweep
             self.pulse2.sweep.enabled = bool(value & 0x80)
@@ -945,6 +961,7 @@ class APU:
             self.pulse2.sweep.negate = bool(value & 0x08)
             self.pulse2.sweep.shift = value & 7
             self.pulse2.sweep.reload = True
+            self.pulse2.sweep.divider.period = self.pulse2.sweep.period
 
         elif addr == 0x4006:  # Pulse 2 timer low
             self.pulse2.timer.period = (self.pulse2.timer.period & 0x700) | value
@@ -956,8 +973,9 @@ class APU:
             )
             if self.pulse2.enabled:
                 self.pulse2.length_counter = self.LENGTH_COUNTER_TABLE[value >> 3]
-            # Reset envelope step like reference implementation
+            # Reset/reload envelope as per hardware
             self.pulse2.envelope.step = 15
+            self.pulse2.envelope.start = True
             self.pulse2.duty_step = 0
             self.pulse2.update_mute()
 
@@ -975,12 +993,15 @@ class APU:
             if self.triangle.enabled:
                 self.triangle.length_counter = self.LENGTH_COUNTER_TABLE[value >> 3]
             self.triangle.linear_reload_flag = True
+            # Reset sequencer position on length reload
+            self.triangle.sequence_step = 0
 
         elif addr == 0x400C:  # Noise envelope
             self.noise.length_halt = bool(value & 0x20)
             self.noise.envelope.loop = bool(value & 0x20)
             self.noise.constant_volume = bool(value & 0x10)
             self.noise.envelope.period = value & 0x0F
+            self.noise.envelope.divider.period = self.noise.envelope.period
 
         elif addr == 0x400E:  # Noise period/mode
             self.noise.mode = bool(value & 0x80)
@@ -989,8 +1010,9 @@ class APU:
         elif addr == 0x400F:  # Noise length
             if self.noise.enabled:
                 self.noise.length_counter = self.LENGTH_COUNTER_TABLE[value >> 3]
-            # Reset envelope step like reference implementation
+            # Reset and restart envelope like reference implementation
             self.noise.envelope.step = 15
+            self.noise.envelope.start = True
 
         elif addr == 0x4010:  # DMC control
             self.dmc.irq_enable = bool(value & 0x80)
@@ -1028,12 +1050,13 @@ class APU:
                 self.noise.length_counter = 0
 
             # DMC handling
-            self.dmc.irq_flag = False
             if self.dmc.enabled:
                 if self.dmc.bytes_remaining == 0:
                     self.dmc.restart()
             else:
+                # Disable and clear DMC state/IRQ when bit 4 is cleared
                 self.dmc.bytes_remaining = 0
+                self.dmc.irq_flag = False
 
         elif addr == 0x4017:  # Frame sequencer
             from utils import debug_print
@@ -1053,4 +1076,16 @@ class APU:
         self.write_register(0x4015, 0)  # Disable all channels
         self.frame_sequencer.cycles = 0
         self.cycle_accumulator = 0.0
+        self._cpu_cycle_parity = 0
         self.audio_buffer.clear()
+
+    def set_region(self, pal_mode: bool):
+        """Switch between NTSC/PAL timing at runtime."""
+        self.pal_mode = pal_mode
+        # Propagate to subcomponents
+        self.noise.pal_mode = pal_mode
+        self.dmc.pal_mode = pal_mode
+        self.frame_sequencer.pal_mode = pal_mode
+        # Recompute timing
+        cpu_clock = 1662607.0 if pal_mode else 1789773.0
+        self.cycles_per_sample = cpu_clock / self.sample_rate

@@ -30,6 +30,13 @@ class CPU:
         self.trace_history = []  # list of dict entries
         self.max_trace_history = 16
 
+        # Track current instruction PC for targeted debugging
+        self.current_instruction_pc = 0
+
+        # Interrupt context tracking
+        self.in_nmi = False
+        self.current_interrupt_type = None
+
         # Status flags (P register)
         self.C = 0  # Carry flag
         self.Z = 0  # Zero flag
@@ -879,7 +886,8 @@ class CPU:
                 self.interrupt_state = 0
                 return 7  # Interrupt handling takes 7 cycles total
 
-        # Now fetch the opcode for the next instruction
+        # Set current instruction PC and fetch the opcode for the next instruction
+        self.current_instruction_pc = old_pc
         opcode = self.memory.read(self.PC)
         fetched_pc = self.PC  # PC of this opcode (before increment)
         self.PC = (self.PC + 1) & 0xFFFF
@@ -906,6 +914,11 @@ class CPU:
         if (
             self.total_cycles % 10000 == 0
             or instruction in ["RTI", "LDA", "STA", "JMP", "BNE", "BEQ", "BCC", "BCS"]
+            or old_pc == 0x810E  # level-load LDA abs,X
+            or old_pc == 0x8111  # BEQ following 0x810E
+            or old_pc == 0x8136  # BNE in level-load loop
+            or old_pc == 0x8FA1  # LDA abs,X in copy loop
+            or old_pc == 0x8FB9  # BCC in copy loop
             or old_pc == 0x8150
             or old_pc == 0x8153
             or old_pc == 0x8227
@@ -923,7 +936,7 @@ class CPU:
         pc_after_address = self.PC
 
         # Debug: Check if PC is advancing properly
-        if old_pc == 0x8150 or old_pc == 0x8153 or old_pc == 0x8227 or old_pc == 0x822E:
+        if old_pc in (0x810E, 0x8111, 0x8150, 0x8153, 0x8227, 0x822E):
             address_str = f"{address:04X}" if address is not None else "0000"
             debug_print(
                 f"CPU: PC progression: {old_pc:04X} -> {pc_before_address:04X} -> {pc_after_address:04X}, addressing_mode={addressing_mode}, length={length}, address=0x{address_str}"
@@ -1066,6 +1079,10 @@ class CPU:
         if self.interrupt_pending == "NMI":
             vector_addr = 0xFFFA
             debug_print(f"CPU: Handling NMI interrupt, vector=0xFFFA")
+            # Mark NMI active until RTI
+            self.in_nmi = True
+            self.current_interrupt_type = "NMI"
+            debug_print(f"CPU: NMI enter (set in_nmi=True)")
         elif self.interrupt_pending == "IRQ":
             vector_addr = 0xFFFE
             debug_print(f"CPU: Handling IRQ interrupt, vector=0xFFFE")
@@ -1116,6 +1133,13 @@ class CPU:
             "BNE": self.Z == 0,
             "BEQ": self.Z == 1,
         }
+
+        # Targeted trace for branch decisions in suspected loops
+        if self.current_instruction_pc in (0x8111, 0x8136, 0x8FB9, 0x812E, 0x80F9):
+            taken = conditions.get(instruction, False)
+            debug_print(
+                f"CPU: {instruction} at PC=0x{self.current_instruction_pc:04X} -> target=0x{address:04X}, taken={taken}, flags: Z={self.Z} N={self.N} C={self.C} V={self.V}"
+            )
 
         extra_cycles = 0
         if conditions.get(instruction, False):
@@ -1448,10 +1472,16 @@ class CPU:
 
     # Instruction implementations - Updated for hardware accuracy
     def execute_lda(self, operand, addressing_mode):
-        # Optimized: avoid duplicate reads for immediate mode
+        # Optimized: single read operation
         value = self.memory.read(operand)
         self.A = value
         self.set_zero_negative(self.A)
+
+        # Targeted trace for suspected freeze loops
+        if self.current_instruction_pc in (0x810E, 0x8FA1, 0x80F6, 0x811F, 0x8126, 0x8182, 0x818D, 0x80F0):
+            debug_print(
+                f"CPU: LDA trace at PC=0x{self.current_instruction_pc:04X}: mode={addressing_mode}, addr=0x{operand:04X}, val=0x{value:02X}, X=0x{self.X:02X}, Y=0x{self.Y:02X}"
+            )
 
         # Debug: Log LDA reads from specific addresses that might be causing loops
         if operand == 0x2002 or operand == 0x2000 or operand == 0x2001:
@@ -1473,12 +1503,22 @@ class CPU:
         self.set_zero_negative(self.Y)
 
     def execute_sta(self, operand, addressing_mode):
+        # CPU-side trace for writes into level buffer region
+        if 0x0500 <= (operand & 0xFFFF) <= 0x07FF:
+            debug_print(
+                f"CPU: STA trace to RAM[${operand & 0xFFFF:04X}] <= A=0x{self.A:02X} at PC=0x{self.current_instruction_pc:04X} (in_nmi={self.in_nmi})"
+            )
         self.memory.write(operand, self.A)
 
     def execute_stx(self, operand, addressing_mode):
         self.memory.write(operand, self.X)
 
     def execute_sty(self, operand, addressing_mode):
+        # CPU-side trace for writes into level buffer region
+        if 0x0500 <= (operand & 0xFFFF) <= 0x07FF:
+            debug_print(
+                f"CPU: STY trace to RAM[${operand & 0xFFFF:04X}] <= Y=0x{self.Y:02X} at PC=0x{self.current_instruction_pc:04X} (in_nmi={self.in_nmi})"
+            )
         self.memory.write(operand, self.Y)
 
     def execute_tax(self, operand, addressing_mode):
@@ -1829,6 +1869,12 @@ class CPU:
         high = self.pop_stack()
         self.PC = (high << 8) | low
 
+        # If we were in NMI, mark as exited now
+        if self.in_nmi:
+            debug_print("CPU: NMI exit (set in_nmi=False)")
+            self.in_nmi = False
+            self.current_interrupt_type = None
+
     def execute_clc(self, operand, addressing_mode):
         self.C = 0
 
@@ -2014,12 +2060,15 @@ class CPU:
         self.set_zero_negative(result)
 
     def execute_tas(self, operand, addressing_mode):
-        """TAS - Transfer A and X to Stack Pointer, then store A & X & (high byte + 1)"""
+        """TAS (SHS) - Transfer A and X to S, then store A & X & (high byte of effective addr + 1)"""
         self.S = self.A & self.X
-        # Store A & X & (high byte of address + 1)
         high_byte = (operand >> 8) & 0xFF
         value = self.A & self.X & (high_byte + 1)
-        self.memory.write(operand, value)
+        if 0x0500 <= (operand & 0xFFFF) <= 0x07FF:
+            debug_print(
+                f"CPU: TAS trace to RAM[${operand & 0xFFFF:04X}] <= 0x{value:02X} at PC=0x{self.current_instruction_pc:04X} (in_nmi={self.in_nmi})"
+            )
+        self.memory.write(operand & 0xFFFF, value)
 
     def execute_kil(self, operand, addressing_mode):
         """KIL - Kill/Jam the processor (halt)"""
@@ -2029,23 +2078,26 @@ class CPU:
         print(f"KIL instruction executed at PC: 0x{self.PC:04X} - processor halted")
 
     def execute_shx(self, operand, addressing_mode):
-        """SHX - Store X AND (high byte + 1)"""
+        """SHX (AHX) - Store X AND (high byte of effective addr + 1) at effective address"""
         high_byte = (operand >> 8) & 0xFF
         value = self.X & (high_byte + 1)
-        # Calculate the actual address with the AND operation
-        actual_addr = ((value << 8) | (operand & 0xFF)) & 0xFFFF
-        self.memory.write(actual_addr, value)
+        # Instrument writes into level buffer region
+        if 0x0500 <= (operand & 0xFFFF) <= 0x07FF:
+            debug_print(
+                f"CPU: SHX trace to RAM[${operand & 0xFFFF:04X}] <= 0x{value:02X} at PC=0x{self.current_instruction_pc:04X} (in_nmi={self.in_nmi})"
+            )
+        self.memory.write(operand & 0xFFFF, value)
 
     def execute_sha(self, operand, addressing_mode):
-        """SHA - Store A AND X AND (high byte + 1)"""
+        """SHA (AHX) - Store A AND X AND (high byte of effective addr + 1) at effective address"""
         high_byte = (operand >> 8) & 0xFF
         value = self.A & self.X & (high_byte + 1)
-        # Calculate the actual address with the AND operation
-        if addressing_mode == "absolute_y":
-            actual_addr = ((value << 8) | (operand & 0xFF)) & 0xFFFF
-        else:
-            actual_addr = operand
-        self.memory.write(actual_addr, value)
+        # Instrument writes into level buffer region
+        if 0x0500 <= (operand & 0xFFFF) <= 0x07FF:
+            debug_print(
+                f"CPU: SHA trace to RAM[${operand & 0xFFFF:04X}] <= 0x{value:02X} at PC=0x{self.current_instruction_pc:04X} (in_nmi={self.in_nmi})"
+            )
+        self.memory.write(operand & 0xFFFF, value)
 
     def execute_alr(self, operand, addressing_mode):
         """ALR - AND then LSR"""

@@ -13,6 +13,9 @@ class Memory:
         self.cpu = None  # CPU reference (for NMI)
         self.apu = None  # APU reference
 
+        # Targeted low-RAM write logging (e.g., $0700-$07FF)
+        self.low_ram_log_count = 0
+
         # Open bus state
         self.bus = 0
 
@@ -24,6 +27,8 @@ class Memory:
         self.controller1_index = 0
         self.controller2_index = 0
         self.strobe = 0
+        # Instrumentation counters
+        self.ppu_status_poll_count = 0  # $2002 polling detection early frames
 
     def ppu_read(self, addr):
         """Read from cartridge (PPU side)"""
@@ -65,10 +70,21 @@ class Memory:
         elif addr < 0x4000:
             # PPU registers (mirrored every 8 bytes)
             ppu_addr = 0x2000 + (addr & 7)
+            if ppu_addr == 0x2002 and self.ppu and self.ppu.frame < 10:
+                self.ppu_status_poll_count += 1
+                if self.ppu_status_poll_count in (1, 5, 20, 100, 500, 2000):
+                    try:
+                        from utils import debug_print
+                        debug_print(
+                            f"CPU: polled $2002 {self.ppu_status_poll_count} times frame={self.ppu.frame} scanline={self.ppu.scanline} cycle={self.ppu.cycle}"
+                        )
+                    except Exception:
+                        pass
             self.bus = self.ppu.read_register(ppu_addr)
             return self.bus
+            return self.bus
         elif addr == 0x4015:
-            # APU Status register
+            # APU status
             if self.apu:
                 self.bus = self.apu.read_status()
                 return self.bus
@@ -90,6 +106,13 @@ class Memory:
             self.bus = (
                 (self.bus & 0xE0) | (result & 0x01) | 0x40
             )  # Bit 6 often set on real hardware
+            # Debug controller reads early frames (first 9 reads)
+            try:
+                from utils import debug_print
+                if self.ppu and self.ppu.frame < 120 and self.controller1_index <= 9:
+                    debug_print(f"INPUT: READ $4016 -> {result} (index={self.controller1_index-1}) frame={self.ppu.frame}")
+            except Exception:
+                pass
             return self.bus
         elif addr == 0x4017:
             # APU Frame Counter (write-only) / Controller 2
@@ -116,7 +139,20 @@ class Memory:
 
         if addr < 0x2000:
             # Internal RAM (mirrored every 2KB)
-            self.ram[addr & 0x7FF] = value
+            real_addr = addr & 0x7FF
+            self.ram[real_addr] = value
+
+            # Targeted debug: log writes into $0700-$07FF to see level/update buffers
+            if 0x0700 <= real_addr <= 0x07FF and self.low_ram_log_count < 200:
+                try:
+                    pc = self.cpu.PC if self.cpu else 0
+                except Exception:
+                    pc = 0
+                from utils import debug_print
+                debug_print(
+                    f"MEM: RAM write @${real_addr:04X}=0x{value:02X} by PC=0x{pc:04X}"
+                )
+                self.low_ram_log_count += 1
         elif addr < 0x4000:
             # PPU registers (mirrored every 8 bytes)
             ppu_addr = 0x2000 + (addr & 7)
@@ -124,6 +160,15 @@ class Memory:
         elif addr == 0x4014:
             # OAM DMA - critical for sprite data transfer
             start_addr = value * 0x100
+            # Debug OAM DMA initiation
+            try:
+                pc = self.cpu.PC if self.cpu else 0
+            except Exception:
+                pc = 0
+            from utils import debug_print
+            debug_print(
+                f"MEM: OAM DMA start from ${start_addr:04X} (value=0x{value:02X}) triggered by PC=0x{pc:04X}"
+            )
 
             # Try to use direct memory access for speed
             ptr_data, offset = self.get_ptr(start_addr)
@@ -141,18 +186,38 @@ class Memory:
             # DMA takes 513 CPU cycles + 1 if on odd cycle (hardware-accurate)
             if hasattr(self.cpu, "add_dma_cycles"):
                 self.cpu.add_dma_cycles(513)
+
+            # Log first few OAM bytes after DMA to verify sprite 0 data
+            if self.ppu and self.ppu.frame < 10:
+                first = ' '.join(f"{b:02X}" for b in self.ppu.oam[:8])
+                debug_print(
+                    f"PPU: OAM[0..7] after DMA: {first} (frame={self.ppu.frame})"
+                )
+            # Extended OAM dump (first 32 bytes) until sprite0 tile becomes something other than 0xFF
+            if self.ppu and (not hasattr(self.ppu, '_sprite0_tile_changed')):
+                sprite0_tile = self.ppu.oam[1]
+                first32 = ' '.join(f"{b:02X}" for b in self.ppu.oam[:32])
+                debug_print(f"PPU: OAM[0..31] snapshot tile0=0x{sprite0_tile:02X}: {first32}")
+                if sprite0_tile != 0xFF:
+                    self.ppu._sprite0_tile_changed = True
         elif addr == 0x4016:
             # Controller strobe register - controls both controllers
             old_strobe = self.strobe
             self.strobe = value & 1
-
             # When strobe goes from high to low, latch the current state
             if old_strobe and not self.strobe:
-                # Strobe falling edge - latch current controller state
                 self.controller1_shift = self.controller1
                 self.controller2_shift = self.controller2
                 self.controller1_index = 0
                 self.controller2_index = 0
+
+            # Debug controller writes early and periodically
+            try:
+                from utils import debug_print
+                if (self.ppu and self.ppu.frame < 120) and (old_strobe != self.strobe or self.ppu.frame % 30 == 0):
+                    debug_print(f"INPUT: WRITE $4016=0x{value:02X} (strobe {old_strobe}->{self.strobe}) frame={self.ppu.frame}")
+            except Exception:
+                pass
 
             # Update bus with mixed old/new values as per hardware
             self.bus = (old_bus & 0xE0) | (value & 0x1F)
@@ -208,7 +273,7 @@ class Cartridge:
         # Header info
         self.prg_rom_size = 0  # Size in 16KB units
         self.chr_rom_size = 0  # Size in 8KB units
-        self.mapper = 0  # Mapper number
+        self.mapper = 0  # Mapper number (numeric id)
         self.mirroring = 0  # 0=horizontal, 1=vertical
         self.has_battery = False
         self.has_trainer = False
@@ -219,8 +284,46 @@ class Cartridge:
         # Maps nametable index to VRAM offset
         self.name_table_map = [0, 0, 0, 0]  # Will be set based on mirroring
 
+        self.mapper_obj = None  # Concrete mapper implementation
+
         self.load_rom()
-        self.set_mirroring()  # Set up nametable mapping
+        self.set_mirroring()  # Initial nametable mapping
+        self.init_mapper()    # Instantiate mapper implementation
+
+    # ------------------------ Mapper Helpers ------------------------
+    def init_mapper(self):
+        """Instantiate mapper object based on mapper id"""
+        m = self.mapper
+        if m == 0:
+            self.mapper_obj = Mapper0(self)
+        elif m == 1:
+            self.mapper_obj = Mapper1(self)
+        elif m == 4:
+            self.mapper_obj = Mapper4(self)
+        else:
+            # Fallback to basic ROM access with NROM-like behaviour
+            self.mapper_obj = Mapper0(self)
+
+    def set_spec_mirroring(self, mode):
+        """Set mirroring according to specified mode string
+        mode: 'horizontal','vertical','onescreen_low','onescreen_high','four'
+        """
+        if mode == 'vertical':
+            self.name_table_map = [0, 0x400, 0, 0x400]
+        elif mode == 'horizontal':
+            self.name_table_map = [0, 0, 0x400, 0x400]
+        elif mode == 'onescreen_low':
+            self.name_table_map = [0, 0, 0, 0]
+        elif mode == 'onescreen_high':
+            self.name_table_map = [0x400, 0x400, 0x400, 0x400]
+        else:  # four-screen or unknown -> default to vertical if four-screen bit set, else horizontal
+            if self.four_screen:
+                # We do not allocate extra VRAM pages yet, approximate with vertical
+                self.name_table_map = [0, 0x400, 0, 0x400]
+            else:
+                self.name_table_map = [0, 0, 0x400, 0x400]
+
+    # ------------------------ Existing Mirroring ------------------------
 
     def set_mirroring(self):
         """Set up nametable mapping based on mirroring type like reference implementation"""
@@ -327,144 +430,343 @@ class Cartridge:
         print(f"Mapper: {self.mapper}")
         print(f"Mirroring: {'Vertical' if self.mirroring else 'Horizontal'}")
         print(f"Region: {self.region}")
-
-        # Debug CHR ROM data - check various locations
-        if len(self.chr_rom) >= 0x1250:
-            print(
-                f"CHR ROM sample data at 0x1240-0x124F: {[hex(x) for x in self.chr_rom[0x1240:0x1250]]}"
-            )
-
-            # Let's also check raw data to see if this is pattern table mirroring
-            print(f"CHR ROM actual size: {len(self.chr_rom)} bytes")
-            print(f"CHR ROM[0x1240] = 0x{self.chr_rom[0x1240]:02X}")
-            print(f"CHR ROM[0x1247] = 0x{self.chr_rom[0x1247]:02X}")
-            print(f"CHR ROM[0x124F] = 0x{self.chr_rom[0x124F]:02X}")
-
-            # Also check if there's data in pattern table 0 at tile 36
-            tile_36_pt0 = 36 * 16  # 0x240
-            if len(self.chr_rom) > tile_36_pt0 + 16:
-                print(
-                    f"Pattern table 0, tile 36 (0x{tile_36_pt0:03X}-0x{tile_36_pt0+15:03X}): {[hex(x) for x in self.chr_rom[tile_36_pt0:tile_36_pt0+16]]}"
-                )
-
-            # Check if there's any non-zero data in the first few KB
-            non_zero_count = sum(1 for x in self.chr_rom[:0x1000] if x != 0)
-            print(f"Non-zero bytes in first 4KB (pattern table 0): {non_zero_count}")
-
-            non_zero_count_pt1 = sum(1 for x in self.chr_rom[0x1000:0x2000] if x != 0)
-            print(
-                f"Non-zero bytes in second 4KB (pattern table 1): {non_zero_count_pt1}"
-            )
-
-            # Show first few non-zero bytes and their addresses
-            for i, byte in enumerate(self.chr_rom[:0x100]):
-                if byte != 0:
-                    print(f"First non-zero byte at 0x{i:04X}: 0x{byte:02X}")
-                    break
-        else:
-            print(f"CHR ROM too small: size={len(self.chr_rom)}")
+        # (Removed verbose one-off debug dumping of CHR range 0x1240–0x124F.)
+        # If you need to inspect CHR contents, add an ad‑hoc tool/script instead of
+        # hard‑coding address ranges here.
 
     def cpu_read(self, addr):
         """Read from cartridge (CPU side)"""
-        if addr < 0x6000:
-            # Expansion ROM area - typically not used, return open bus
-            return 0
-        elif 0x6000 <= addr <= 0x7FFF:
-            # PRG RAM/SRAM
-            return self.prg_ram[addr - 0x6000]
-        elif addr >= 0x8000:
-            # PRG ROM
-            if self.mapper == 0:  # NROM
-                if self.prg_rom_size == 1:
-                    # 16KB ROM mirrored to both 0x8000-0xBFFF and 0xC000-0xFFFF
-                    return self.prg_rom[(addr - 0x8000) & 0x3FFF]
-                else:
-                    # 32KB ROM
-                    return self.prg_rom[addr - 0x8000]
-            else:
-                # Other mappers - simple fallback
-                return self.prg_rom[(addr - 0x8000) % len(self.prg_rom)]
-        return 0
+        return self.mapper_obj.cpu_read(addr)
 
     def cpu_write(self, addr, value):
         """Write to cartridge (CPU side)"""
-        if addr < 0x6000:
-            # Expansion ROM area - typically not writable
-            return
-        elif 0x6000 <= addr <= 0x7FFF:
-            # PRG RAM/SRAM
-            self.prg_ram[addr - 0x6000] = value
-        elif addr >= 0x8000:
-            # PRG ROM area - mapper register writes
-            if self.mapper == 0:  # NROM
-                # NROM doesn't have mapper registers, writes are ignored
-                pass
-            else:
-                # Other mappers would handle bank switching here
-                pass
+        self.mapper_obj.cpu_write(addr, value)
 
     def ppu_read(self, addr):
         """Read from cartridge (PPU side)"""
-        if addr < 0x2000:
-            # Pattern tables (CHR ROM/RAM) - NROM mapper 0 implementation
-            if self.mapper == 0:  # NROM
-                if len(self.chr_rom) > 0:
-                    # For NROM, CHR ROM should be accessible across full 8KB range (0x0000-0x1FFF)
-                    # If CHR ROM is smaller than 8KB, it should be mirrored
-                    chr_addr = addr % len(self.chr_rom)
-
-                    # Special handling for problematic addresses that cause loops
-                    if addr >= 0x1240 and addr <= 0x124F:
-                        # Add frame-dependent pattern for Mario sprite to enable animation
-                        if (
-                            hasattr(self, "nes")
-                            and self.nes
-                            and hasattr(self.nes, "ppu")
-                            and self.nes.ppu
-                        ):
-                            frame = self.nes.ppu.frame
-                            # Simple animation pattern - changes every 10 frames
-                            if (frame // 10) % 2 == 0:
-                                value = (
-                                    0x55 if addr % 2 == 0 else 0xAA
-                                )  # First animation frame
-                            else:
-                                value = (
-                                    0xAA if addr % 2 == 0 else 0x55
-                                )  # Second animation frame
-
-                            print(
-                                f"CHR ROM: Animated pattern at addr=0x{addr:04X}, frame={frame}, value=0x{value:02X}"
-                            )
-                            return value
-
-                        # Fallback if nes reference not available
-                        value = self.chr_rom[chr_addr]
-                        print(
-                            f"CHR ROM: addr=0x{addr:04X}, chr_addr=0x{chr_addr:04X}, value=0x{value:02X}, chr_rom_size={len(self.chr_rom)}"
-                        )
-                        return value
-
-                    return self.chr_rom[chr_addr]
-                else:
-                    print(
-                        f"CHR ROM empty: addr=0x{addr:04X}, chr_rom_size={len(self.chr_rom)}"
-                    )
-                    return 0
-            else:
-                # Other mappers would handle bank switching here
-                if addr < len(self.chr_rom):
-                    return self.chr_rom[addr]
-        return 0
+        return self.mapper_obj.ppu_read(addr)
 
     def ppu_write(self, addr, value):
         """Write to cartridge (PPU side)"""
+        self.mapper_obj.ppu_write(addr, value)
+
+# ------------------------ Mapper Implementations ------------------------
+
+class Mapper:
+    def __init__(self, cart: 'Cartridge'):
+        self.cart = cart
+
+    # CPU
+    def cpu_read(self, addr: int) -> int:
+        return 0
+    def cpu_write(self, addr: int, value: int):
+        pass
+    # PPU
+    def ppu_read(self, addr: int) -> int:
+        return 0
+    def ppu_write(self, addr: int, value: int):
+        pass
+
+
+class Mapper0(Mapper):
+    """NROM"""
+    def __init__(self, cart):
+        super().__init__(cart)
+        self.prg_rom = cart.prg_rom
+        self.chr = cart.chr_rom
+
+    def cpu_read(self, addr):
+        if addr < 0x6000:
+            return 0
+        if 0x6000 <= addr <= 0x7FFF:
+            return self.cart.prg_ram[addr - 0x6000]
+        if addr >= 0x8000:
+            if self.cart.prg_rom_size == 1:
+                return self.prg_rom[(addr - 0x8000) & 0x3FFF]
+            return self.prg_rom[addr - 0x8000]
+        return 0
+
+    def cpu_write(self, addr, value):
+        if 0x6000 <= addr <= 0x7FFF:
+            self.cart.prg_ram[addr - 0x6000] = value
+        # No mapper registers
+
+    def ppu_read(self, addr):
         if addr < 0x2000:
-            # CHR RAM (if no CHR ROM) - only writable if CHR RAM
-            if self.chr_rom_size == 0 and addr < len(self.chr_rom):
-                self.chr_rom[addr] = value
-                # Debug CHR RAM writes that might affect sprite 0 hit detection
-                if hasattr(self, 'nes') and self.nes and hasattr(self.nes, 'ppu') and self.nes.ppu:
-                    frame = self.nes.ppu.frame
-                    if frame >= 0 and frame < 50 and value != 0:
-                        print(f"CHR RAM Write: addr=0x{addr:04X}, value=0x{value:02X}, frame={frame}")
+            size = len(self.chr)
+            if size == 0:
+                return 0
+            # Mirror power-of-two size
+            if (size & (size - 1)) == 0:
+                return self.chr[addr & (size - 1)]
+            return self.chr[addr % size]
+        return 0
+
+    def ppu_write(self, addr, value):
+        if addr < 0x2000 and self.cart.chr_rom_size == 0:
+            if addr < len(self.chr):
+                self.chr[addr] = value
+
+
+class Mapper1(Mapper):
+    """MMC1 - Implements shift register logic (no SRAM protect variations)"""
+    def __init__(self, cart):
+        super().__init__(cart)
+        self.shift_reg = 0x10  # bit4 set indicates empty
+        self.control = 0x0C    # default after reset (16KB switch, vertical)
+        self.chr_bank0 = 0
+        self.chr_bank1 = 0
+        self.prg_bank = 0
+        self.update_mirroring()
+
+    def update_mirroring(self):
+        mirr_mode = self.control & 0x03
+        if mirr_mode == 0:
+            self.cart.set_spec_mirroring('onescreen_low')
+        elif mirr_mode == 1:
+            self.cart.set_spec_mirroring('onescreen_high')
+        elif mirr_mode == 2:
+            self.cart.set_spec_mirroring('vertical')
+        else:
+            self.cart.set_spec_mirroring('horizontal')
+
+    def write_register(self, addr, value):
+        # Reset if bit7 set
+        if value & 0x80:
+            self.shift_reg = 0x10
+            self.control |= 0x0C
+            self.update_mirroring()
+            return
+        # Shift in bit (LSB first)
+        carry = value & 1
+        complete = (self.shift_reg & 1) == 1
+        self.shift_reg >>= 1
+        self.shift_reg |= (carry << 4)
+        if complete:
+            reg_val = self.shift_reg & 0x1F
+            if 0x8000 <= addr <= 0x9FFF:
+                self.control = reg_val
+                self.update_mirroring()
+            elif 0xA000 <= addr <= 0xBFFF:
+                self.chr_bank0 = reg_val
+            elif 0xC000 <= addr <= 0xDFFF:
+                self.chr_bank1 = reg_val
+            elif 0xE000 <= addr <= 0xFFFF:
+                self.prg_bank = reg_val & 0x0F
+            self.shift_reg = 0x10
+
+    def cpu_read(self, addr):
+        if addr < 0x6000:
+            return 0
+        if 0x6000 <= addr <= 0x7FFF:
+            return self.cart.prg_ram[addr - 0x6000]
+        if addr >= 0x8000:
+            prg_mode = (self.control >> 2) & 0x03
+            prg_size = len(self.cart.prg_rom)
+            bank_16k = self.prg_bank % max(1, self.cart.prg_rom_size * 2)
+            if prg_mode in (0,1):  # 32KB switch (ignore low bit)
+                base = (bank_16k & 0xFE) * 0x4000
+                return self.cart.prg_rom[(base + (addr - 0x8000)) % prg_size]
+            elif prg_mode == 2:  # Fix first bank at $8000, switch at $C000
+                if addr < 0xC000:
+                    return self.cart.prg_rom[addr - 0x8000]
+                else:
+                    base = bank_16k * 0x4000
+                    return self.cart.prg_rom[(base + (addr - 0xC000)) % prg_size]
+            else:  # prg_mode == 3: switch at $8000, fix last bank at $C000
+                if addr < 0xC000:
+                    base = bank_16k * 0x4000
+                    return self.cart.prg_rom[(base + (addr - 0x8000)) % prg_size]
+                else:
+                    base = (self.cart.prg_rom_size - 1) * 0x4000
+                    return self.cart.prg_rom[(base + (addr - 0xC000)) % prg_size]
+        return 0
+
+    def cpu_write(self, addr, value):
+        if 0x6000 <= addr <= 0x7FFF:
+            self.cart.prg_ram[addr - 0x6000] = value
+        elif addr >= 0x8000:
+            self.write_register(addr, value)
+
+    def ppu_read(self, addr):
+        if addr < 0x2000:
+            chr_mode = (self.control >> 4) & 1
+            chr_size = len(self.cart.chr_rom)
+            if chr_size == 0:
+                return 0
+            if chr_mode == 0:  # 8KB
+                bank = (self.chr_bank0 & 0x1E) * 0x1000
+                return self.cart.chr_rom[(bank + addr) % chr_size]
+            else:  # 4KB + 4KB
+                if addr < 0x1000:
+                    bank = self.chr_bank0 * 0x1000
+                    return self.cart.chr_rom[(bank + addr) % chr_size]
+                else:
+                    bank = self.chr_bank1 * 0x1000
+                    return self.cart.chr_rom[(bank + (addr - 0x1000)) % chr_size]
+        return 0
+
+    def ppu_write(self, addr, value):
+        if addr < 0x2000 and self.cart.chr_rom_size == 0:
+            if addr < len(self.cart.chr_rom):
+                self.cart.chr_rom[addr] = value
+
+
+class Mapper4(Mapper):
+    """MMC3 with PRG/CHR banking, mirroring, and IRQ counter"""
+    def __init__(self, cart):
+        super().__init__(cart)
+        self.bank_select = 0
+        self.bank_regs = [0]*8  # 0-5 CHR, 6-7 PRG
+        self.prg_mode = 0
+        self.chr_mode = 0
+        # IRQ related
+        self.irq_latch = 0
+        self.irq_counter = 0
+        self.irq_reload = False
+        self.irq_enabled = False
+        self.prev_a12 = 0
+        self.last_a12_cycle = 0  # CPU cycle timestamp to filter rapid toggles
+        self.update_prg_banks()
+
+    def update_prg_banks(self):
+        prg_size = len(self.cart.prg_rom)
+        if prg_size == 0:
+            self.prg_map = [0,0,0,0]
+            return
+        bank_count = prg_size // 0x2000  # 8KB banks
+        last_bank = bank_count - 1
+        second_last_bank = bank_count - 2
+        b6 = self.bank_regs[6] % bank_count
+        b7 = self.bank_regs[7] % bank_count
+        if self.prg_mode == 0:
+            self.prg_map = [b6, b7, second_last_bank, last_bank]
+        else:
+            self.prg_map = [second_last_bank, b7, b6, last_bank]
+
+    def update_chr_banks(self):
+        # We'll map 1KB pages directly (simplified).
+        chr_size = len(self.cart.chr_rom)
+        if chr_size == 0:
+            self.chr_map = [0]*8
+            return
+        regs = self.bank_regs
+        if self.chr_mode == 0:
+            r0 = regs[0] & 0xFE; r1 = regs[1] & 0xFE
+            self.chr_map = [r0, r0+1, r1, r1+1, regs[2], regs[3], regs[4], regs[5]]
+        else:
+            r0 = regs[0] & 0xFE; r1 = regs[1] & 0xFE
+            self.chr_map = [regs[2], regs[3], regs[4], regs[5], r0, r0+1, r1, r1+1]
+        pages = chr_size // 0x400
+        if pages == 0: pages = 1
+        for i in range(8):
+            self.chr_map[i] %= pages
+
+    def clock_irq(self):
+        """Clock MMC3 IRQ counter on valid A12 rising edge during rendering."""
+        # When counter is zero OR reload flag set, reload from latch then decrement to 0
+        if self.irq_counter == 0 or self.irq_reload:
+            self.irq_counter = self.irq_latch if self.irq_latch != 0 else 0x100
+            self.irq_reload = False
+        else:
+            self.irq_counter -= 1
+        # Trigger IRQ when counter hits zero after decrement
+        if self.irq_counter == 0 and self.irq_enabled:
+            # Trigger CPU IRQ
+            mem = getattr(self.cart, 'memory', None)
+            if mem and hasattr(mem, 'nes') and hasattr(mem.nes, 'cpu') and hasattr(mem.nes.cpu, 'trigger_interrupt'):
+                mem.nes.cpu.trigger_interrupt('IRQ')
+
+    def cpu_read(self, addr):
+        if addr < 0x6000:
+            return 0
+        if 0x6000 <= addr <= 0x7FFF:
+            return self.cart.prg_ram[addr - 0x6000]
+        if addr >= 0x8000:
+            bank_slot = (addr - 0x8000) // 0x2000
+            offset = addr & 0x1FFF
+            if bank_slot < 4:
+                bank_index = self.prg_map[bank_slot]
+                base = bank_index * 0x2000
+                prg_size = len(self.cart.prg_rom)
+                if prg_size:
+                    return self.cart.prg_rom[(base + offset) % prg_size]
+        return 0
+
+    def cpu_write(self, addr, value):
+        if 0x6000 <= addr <= 0x7FFF:
+            self.cart.prg_ram[addr - 0x6000] = value; return
+        if addr >= 0x8000:
+            even = (addr & 1) == 0
+            if 0x8000 <= addr <= 0x9FFF:
+                if even:
+                    self.bank_select = value
+                    self.chr_mode = (value >> 7) & 1
+                    self.prg_mode = (value >> 6) & 1
+                else:
+                    reg_index = self.bank_select & 0x07
+                    self.bank_regs[reg_index] = value
+                    if reg_index >=6:
+                        self.update_prg_banks()
+                    else:
+                        self.update_chr_banks()
+                    self.update_prg_banks(); self.update_chr_banks()
+            elif 0xA000 <= addr <= 0xBFFF:
+                if even:
+                    if value & 1:
+                        self.cart.set_spec_mirroring('horizontal')
+                    else:
+                        self.cart.set_spec_mirroring('vertical')
+                else:
+                    pass  # PRG RAM protect ignored
+            elif 0xC000 <= addr <= 0xDFFF:
+                if even:
+                    # $C000 even: IRQ latch
+                    self.irq_latch = value
+                else:
+                    # $C001 odd: IRQ reload
+                    self.irq_reload = True
+                # No immediate counter decrement here; occurs on next A12 rise
+            elif 0xE000 <= addr <= 0xFFFF:
+                if even:
+                    # $E000 even: IRQ disable + acknowledge
+                    self.irq_enabled = False
+                    # Acknowledge pending IRQ by clearing any CPU pending flag is left to CPU status read ($4015) or explicit design; do nothing else
+                else:
+                    # $E001 odd: IRQ enable
+                    self.irq_enabled = True
+
+    def ppu_read(self, addr):
+        # CHR fetch with A12 edge detection
+        if addr < 0x2000:
+            chr_size = len(self.cart.chr_rom)
+            if chr_size == 0:
+                return 0
+            if not hasattr(self, 'chr_map'):
+                self.update_chr_banks()
+            bank = self.chr_map[(addr // 0x400) & 7]
+            base = bank * 0x400
+            value = self.cart.chr_rom[(base + (addr & 0x3FF)) % chr_size]
+            # Detect rising edge of A12 (bit 12 of PPU address) with 2 PPU cycle minimum spacing
+            a12 = (addr >> 12) & 1
+            if self.prev_a12 == 0 and a12 == 1:
+                # Use CPU cycle count as time reference
+                mem = getattr(self.cart, 'memory', None)
+                cpu_cycles = getattr(mem.nes.cpu, 'total_cycles', 0) if mem and hasattr(mem, 'nes') else 0
+                # MMC3 spec: ignore rapid toggles (< 8 PPU cycles ~ < 3 CPU cycles). We'll use >= 3 CPU cycles filter
+                if cpu_cycles - self.last_a12_cycle >= 3:
+                    self.clock_irq()
+                    self.last_a12_cycle = cpu_cycles
+            self.prev_a12 = a12
+            return value
+        return 0
+
+    def ppu_write(self, addr, value):
+        if addr < 0x2000 and self.cart.chr_rom_size == 0:
+            if not hasattr(self, 'chr_map'):
+                self.update_chr_banks()
+            bank = self.chr_map[(addr // 0x400) & 7]
+            base = bank * 0x400
+            chr_size = len(self.cart.chr_rom)
+            target = (base + (addr & 0x3FF)) % chr_size
+            self.cart.chr_rom[target] = value
