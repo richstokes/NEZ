@@ -17,12 +17,13 @@ I had assumed that being a 40 year old, incredibly well documented platform, tha
     <img src="screenshots/c1.png" alt="Screenshot of NEZ running" width="50%">
 </p>
 
-## Things that are annoying when attempting this
+## Things I have found are not great when attempting this
 
 - Can blow through a months Warp quota in a couple of hours when asking it to dive deep into implementing/reviewing logs. Copilot isn't much better. This experiment is doing a lot of iterating/scanning huge log output so perhaps understandable, but it doesn't feel like you get many credits for your money.
 - GitHub Copilot can't read zsh terminal output properly. Switching it to bash seems to be more reliable.
 - GitHub Copilot can't auto run commands, so have to repeatedly click to allow it to grep logs, etc. It looks like they might be fixing this soon.
-- The "lower" models (GPT <5, the free models with copilot, gemini) are often lazy and like to either propose changes vaguely, and not actually implement them even though they are in agent mode. Or they don't consider the full context, often deleting large swathes of code with placeholders like `# Rest of code here`
+- The "lower" models (GPT <5, the free models with copilot, gemini) are often lazy and like to either propose changes vaguely, and not actually implement them even though they are in agent mode. Or they don't consider the full context, often deleting large swathes of code with placeholders like `# Rest of code here`. Sometimes I catch this, but I'm mostly not reviewing the code. Instead, commit often and revert if it seems to have regressed. I'm sure the spaghetti factor here is horrendous as a result.
+- The lower models often like to duplicate functions. Again it seems that they are not reviewing/considering the full context of the codebase (even when asked). Often times I've had to tell it to go and consolidate duplicate/similar methods. Similarly they have a tendency to create placeholder or stub methods.
 
 ## Installation
 
