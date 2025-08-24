@@ -19,10 +19,10 @@ I had assumed that being a 40 year old, incredibly well documented platform, tha
 
 ## Things that are annoying when attempting this
 
-- Can blow through a months Warp quota in a couple of hours when asking it to dive deep into implementing/reviewing logs. Copilot isn't much better.
+- Can blow through a months Warp quota in a couple of hours when asking it to dive deep into implementing/reviewing logs. Copilot isn't much better. This experiment is doing a lot of iterating/scanning huge log output so perhaps understandable, but it doesn't feel like you get many credits for your money.
 - GitHub Copilot can't read zsh terminal output properly. Switching it to bash seems to be more reliable.
 - GitHub Copilot can't auto run commands, so have to repeatedly click to allow it to grep logs, etc. It looks like they might be fixing this soon.
-- The "lower" models (GPT <5, the free models with copilot, gemini) are often lazy and like to either propose changes vaguely, and not actually implement them. Or they don't consider the full context, often deleting large swathes of code with placeholders like `# Rest of code here`
+- The "lower" models (GPT <5, the free models with copilot, gemini) are often lazy and like to either propose changes vaguely, and not actually implement them even though they are in agent mode. Or they don't consider the full context, often deleting large swathes of code with placeholders like `# Rest of code here`
 
 ## Installation
 
