@@ -17,6 +17,12 @@ I had assumed that being a 40 year old, incredibly well documented platform, tha
     <img src="screenshots/c1.png" alt="Screenshot of NEZ running" width="50%">
 </p>
 
+## Things that are annoying when attempting this
+
+- Can blow through a months Warp quota in a couple of hours when asking it to dive deep into implementing/reviewing logs. Copilot isn't much better.
+- GitHub Copilot can't read zsh terminal output properly. Switching it to bash seems to be more reliable.
+- GitHub Copilot can't auto run commands, so have to repeatedly click to allow it to grep logs, etc. It looks like they might be fixing this soon.
+
 ## Installation
 
 The environment is already set up with pipenv. Just activate it:
