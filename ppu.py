@@ -233,6 +233,9 @@ class PPU:
         # Legacy behavior (False) shifts BEFORE rendering the pixel.
         self.bg_shift_post_render = True
 
+        # TEMP: Force sprite0 hit to verify freeze cause (will be disabled after validation)
+        self.force_sprite0_hit_test = True
+
         # One-time logging flags for first writes
         self._logged_ppuctrl_first = False
         self._logged_ppumask_first = False
@@ -598,14 +601,16 @@ class PPU:
                 elif target < self.VISIBLE_SCANLINES:
                     self.prepare_sprites(target)
 
-            # Increment Y at end of visible area
-            elif self.cycle == self.VISIBLE_DOTS + 1 and (self.mask & self.SHOW_BG):
+            # Hardware timing: At cycle 256 (last visible pixel) increment Y
+            elif self.cycle == self.VISIBLE_DOTS and (self.mask & self.SHOW_BG):
+                # Correct vertical scroll increment timing (was 257)
                 self.increment_y()
 
-            # Copy X from temp at start of next scanline prep
-            elif self.cycle == self.VISIBLE_DOTS + 2 and (
+            # Hardware timing: At cycle 257 copy horizontal bits from t to v
+            elif self.cycle == self.VISIBLE_DOTS + 1 and (
                 self.mask & (self.SHOW_BG | self.SHOW_SPRITE)
             ):
+                # Correct horizontal scroll reload timing (was 258)
                 self.copy_x()
 
 
@@ -711,8 +716,12 @@ class PPU:
             ):
                 self.copy_y()
 
-            # Copy X position
-            elif self.cycle == self.VISIBLE_DOTS + 2 and (
+            # At cycle 256 of pre-render, increment Y like visible scanlines
+            elif self.cycle == self.VISIBLE_DOTS and (self.mask & self.SHOW_BG):
+                self.increment_y()
+
+            # Copy X position at cycle 257 of pre-render
+            elif self.cycle == self.VISIBLE_DOTS + 1 and (
                 self.mask & (self.SHOW_BG | self.SHOW_SPRITE)
             ):
                 self.copy_x()
@@ -1239,6 +1248,8 @@ class PPU:
         if cycle_in_tile == 0:  # Cycle 1, 9, 17, 25, etc. - Fetch nametable byte
             tile_addr = 0x2000 | (self.v & 0xFFF)
             self.nt_byte = self.read_vram(tile_addr)
+            if (30 <= self.scanline <= 32) and (80 <= (self.cycle - 1) <= 100):
+                debug_print(f"BG TILE FETCH: f={self.frame} sl={self.scanline} x={(self.cycle-1)} v=0x{self.v:04X} nt=0x{self.nt_byte:02X}")
             
         elif cycle_in_tile == 2:  # Cycle 3, 11, 19, 27, etc. - Fetch attribute byte
             attr_addr = 0x23C0 | (self.v & 0x0C00) | ((self.v >> 4) & 0x38) | ((self.v >> 2) & 0x07)
@@ -1249,6 +1260,8 @@ class PPU:
             if self.ctrl & self.BG_TABLE:
                 pattern_addr += 0x1000
             self.bg_low_byte = self.read_vram(pattern_addr)
+            if (30 <= self.scanline <= 32) and (80 <= (self.cycle - 1) <= 100):
+                debug_print(f"BG PAT LOW: f={self.frame} sl={self.scanline} x={(self.cycle-1)} patt_addr=0x{pattern_addr:04X} low=0x{self.bg_low_byte:02X} nt=0x{self.nt_byte:02X}")
             # Extra debug near sprite0 region (scanlines ~24-40) every 32 frames
             if (24 <= self.scanline <= 40) and (80 <= (self.cycle-1) <= 104) and (self.frame % 32 == 0):
                 debug_print(f"PPU BG fetch low: frame={self.frame} sl={self.scanline} cyc={self.cycle} nt=0x{self.nt_byte:02X} patt_addr=0x{pattern_addr:04X} low=0x{self.bg_low_byte:02X} v=0x{self.v:04X}")
@@ -1261,6 +1274,8 @@ class PPU:
             if self.ctrl & self.BG_TABLE:
                 pattern_addr += 0x1000
             self.bg_high_byte = self.read_vram(pattern_addr)
+            if (30 <= self.scanline <= 32) and (80 <= (self.cycle - 1) <= 100):
+                debug_print(f"BG PAT HIGH: f={self.frame} sl={self.scanline} x={(self.cycle-1)} patt_addr=0x{pattern_addr:04X} high=0x{self.bg_high_byte:02X} nt=0x{self.nt_byte:02X}")
             if (24 <= self.scanline <= 40) and (80 <= (self.cycle-1) <= 104) and (self.frame % 32 == 0):
                 debug_print(f"PPU BG fetch high: frame={self.frame} sl={self.scanline} cyc={self.cycle} nt=0x{self.nt_byte:02X} patt_addr=0x{pattern_addr:04X} high=0x{self.bg_high_byte:02X} v=0x{self.v:04X}")
             if hasattr(self, '_dumped_tile_ff') and self.frame in (41,42) and (self.cycle-1) < 256 and self.scanline < 50 and (self.cycle % 64 == 7):
