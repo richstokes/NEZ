@@ -10,6 +10,7 @@ from utils import debug_print
 class CPU:
     def __init__(self, memory):
         self.memory = memory
+        debug_print("CPU: INIT build v1.1 latency-no-grace immediate-post-apply-sample")
 
         # Registers
         self.A = 0  # Accumulator
@@ -58,11 +59,18 @@ class CPU:
             0  # 0 = normal, 1 = branch pending, 2 = interrupt pending
         )
 
-        # CLI/SEI/PLP latency tracking for interrupt flag changes
-        self.interrupt_inhibit = 1  # Effective interrupt disable (tracks delay)
-        self.interrupt_delay_counter = 0  # Number of full instructions to wait before applying to interrupt_inhibit
-        self.interrupt_delay_pending = False  # Back-compat flag for tests
-        self.interrupt_delay_value = None  # Back-compat: target I value after delay
+        # CLI/SEI/PLP latency tracking for interrupt flag changes.
+        # Visible I (self.I) changes immediately, but effective recognition mask (interrupt_inhibit)
+        # updates only AFTER one COMPLETE instruction following the LAST modifying instruction.
+        # If multiple modifying instructions occur back-to-back (e.g. CLI then SEI), only the
+        # final state is applied after a single latency window – hardware behaviour verified by
+        # cpu_interrupts_v2 test suite specs.
+        self.interrupt_inhibit = 1  # Effective mask actually consulted for IRQ recognition
+        self.pending_interrupt_inhibit = self.interrupt_inhibit  # Target value to apply after latency
+        self.interrupt_latency_remaining = 0  # Counts full instructions still to wait (excludes current)
+        self.interrupt_latency_armed = True  # Newly scheduled latency starts unarmed so current instr doesn't count
+        # Grace mechanism removed; tests expect IRQ eligible immediately after latency application
+        self.interrupt_unmask_grace = 0  # (legacy field retained but inactive)
 
         # Branch state tracking
         self.branch_pending = False
@@ -825,10 +833,11 @@ class CPU:
         self.branch_pending = False
 
         # Initialize interrupt latency state
-        self.interrupt_inhibit = self.I  # Initialize to match I flag
-        self.interrupt_delay_counter = 0
-        self.interrupt_delay_pending = False
-        self.interrupt_delay_value = None
+        self.interrupt_inhibit = self.I
+        self.pending_interrupt_inhibit = self.interrupt_inhibit
+        self.interrupt_latency_remaining = 0
+        self.interrupt_latency_armed = True
+        self.interrupt_unmask_grace = 0  # inactive
 
     def step(self):
         """Execute one CPU cycle with hardware-accurate timing"""
@@ -854,37 +863,13 @@ class CPU:
         return 1
 
     def run_instruction(self):
-        """Execute complete instruction following RustyNES model - returns total cycles consumed"""
-        # Store whether there was a delay active before this instruction started
-        delay_was_active = self.interrupt_delay_counter > 0
-        
-        # Apply any deferred interrupt recognition changes from previous instruction FIRST,
-        # then check for pending interrupts. This matches 6502 order at instruction boundary.
-        if self.interrupt_delay_counter > 0:
-            self.interrupt_delay_counter -= 1
-            self.interrupt_delay_pending = self.interrupt_delay_counter > 0
-            if self.interrupt_delay_counter == 0:
-                self.interrupt_inhibit = self.I
-                debug_print(
-                    f"CPU: Interrupt inhibit updated at boundary: I={self.I}, interrupt_inhibit={self.interrupt_inhibit}"
-                )
-
-        # IMPORTANT: Handle pending interrupts BEFORE fetching the next opcode.
-        # On real 6502, interrupts are recognized between instructions and the PC pushed
-        # is the address of the next instruction (i.e., current PC). Fetching and incrementing
-        # the PC before servicing the interrupt would incorrectly advance PC and corrupt return.
+        """Execute one whole instruction. Implements interrupt recognition and queued latency events.
+        Latency semantics:
+          - CLI/SEI/PLP that change I: visible I changes immediately, but effective interrupt_inhibit is updated only
+            after one COMPLETE subsequent instruction executes. Implemented with a queue; newly added events are
+            unarmed so they survive the remainder of the current instruction plus the entire next instruction.
+        """
         old_pc = self.PC
-        if self.interrupt_pending and self.interrupt_state == 0:
-            if (self.interrupt_pending == "NMI") or (
-                self.interrupt_pending == "IRQ" and self.interrupt_inhibit == 0 and not delay_was_active
-            ):
-                debug_print(
-                    f"CPU: Starting interrupt handling for {self.interrupt_pending}, PC=0x{self.PC:04X}"
-                )
-                self._handle_interrupt()
-                self.interrupt_pending = None
-                self.interrupt_state = 0
-                return 7  # Interrupt handling takes 7 cycles total
 
         # Set current instruction PC and fetch the opcode for the next instruction
         self.current_instruction_pc = old_pc
@@ -892,14 +877,31 @@ class CPU:
         fetched_pc = self.PC  # PC of this opcode (before increment)
         self.PC = (self.PC + 1) & 0xFFFF
 
+        # AFTER-FETCH boundary: sample interrupts after we've committed to this instruction boundary.
+        if self.interrupt_pending and self.interrupt_state == 0:
+            if self.interrupt_pending == "NMI":
+                debug_print(f"CPU: Starting interrupt handling for {self.interrupt_pending}, PC=0x{old_pc:04X} (after-fetch)")
+                self._handle_interrupt()
+                self.interrupt_pending = None
+                self.interrupt_state = 0
+                return 7
+            elif self.interrupt_pending == "IRQ":
+                if self.interrupt_inhibit == 0:
+                    debug_print(f"CPU: Starting interrupt handling for {self.interrupt_pending}, PC=0x{old_pc:04X} (after-fetch)")
+                    self._handle_interrupt()
+                    self.interrupt_pending = None
+                    self.interrupt_state = 0
+                    return 7
+                else:
+                    debug_print(f"CPU: IRQ pending but masked at boundary (effective inhibit=1, visible I={self.I}) PC=0x{old_pc:04X}")
+
         # If we fetch a KIL opcode or hit the suspicious PC, dump context once
         if opcode in self.kil_opcodes or fetched_pc == 0xAE0B:
             if self.jam_reported_at != fetched_pc:
                 self._dump_jam_context(fetched_pc, opcode)
                 self.jam_reported_at = fetched_pc
 
-        # Note whether a delay was already pending before this instruction began
-        pre_delay_counter = self.interrupt_delay_counter
+    # (Legacy fields removed in new latency model)
 
         # Get base cycle count from lookup table for hardware accuracy
         base_cycles = self.cycle_lookup[opcode]
@@ -970,11 +972,23 @@ class CPU:
             base_cycles + extra_cycles + branch_cycles + page_crossing_penalty
         )
 
-        # Deferred interrupt recognition already applied at boundary above.
-        # Keep these legacy flags in sync for tests but do not re-apply.
-        if pre_delay_counter > 0:
-            # No-op here; the actual decrement happened at entry.
-            pass
+        # END-OF-INSTRUCTION latency processing (single, collapsible event)
+        latency_applied_now = False
+        if self.interrupt_latency_remaining > 0:
+            if not self.interrupt_latency_armed:
+                # Arm after the modifying instruction completes; do not decrement yet
+                self.interrupt_latency_armed = True
+                debug_print(f"CPU: Latency armed after modifier at PC=0x{old_pc:04X}; waiting for 1 full intervening instruction")
+            else:
+                # Count one full instruction executed post-modification
+                self.interrupt_latency_remaining -= 1
+                debug_print(f"CPU: Latency countdown -> {self.interrupt_latency_remaining} after PC=0x{old_pc:04X}")
+                if self.interrupt_latency_remaining == 0:
+                    self.interrupt_inhibit = self.pending_interrupt_inhibit
+                    debug_print(f"CPU: Interrupt inhibit latency applied: effective now {self.interrupt_inhibit} (visible I={self.I}) after PC=0x{old_pc:04X}")
+                    latency_applied_now = True
+
+
 
         # Record trace after executing instruction
         try:
@@ -1569,19 +1583,16 @@ class CPU:
         temp_status = (status & ~0x30) | (temp_status & 0x30)
         self.set_status_byte(temp_status)
 
-        # If I changed, recognition is delayed one instruction
+        # If I changed, recognition is delayed one instruction (same latency as CLI/SEI)
         if new_i != old_i:
-            self.I = new_i  # Visible immediately
-            # One-instruction latency, applied at next boundary
-            self.interrupt_delay_counter = 1
-            self.interrupt_delay_pending = True
-            self.interrupt_delay_value = self.I
-            debug_print(
-                f"CPU: PLP changed I -> {self.I}, scheduling IRQ mask update after 1 instruction"
-            )
-        else:
             self.I = new_i
-            self.interrupt_delay_value = self.I
+            if self.interrupt_inhibit != self.I:
+                self.pending_interrupt_inhibit = self.I
+                self.interrupt_latency_remaining = 1
+                self.interrupt_latency_armed = False
+            debug_print(f"CPU: PLP changed I -> {self.I}, latency scheduled (after one full intervening instruction)")
+        else:
+            self.I = new_i  # No change -> no latency scheduling
 
     def execute_adc(self, operand, addressing_mode):
         # Optimized: single read operation
@@ -1822,6 +1833,7 @@ class CPU:
         # Push PC and status to stack
         self.push_stack((self.PC >> 8) & 0xFF)
         self.push_stack(self.PC & 0xFF)
+        debug_print(f"CPU: BRK executed (NMI pending={self.interrupt_pending == 'NMI'})")
         
         # If an NMI is pending at this exact moment, NMI takes precedence over BRK.
         # This matches hardware behavior verified by cpu_interrupts_v2 2-nmi_and_brk.
@@ -1883,33 +1895,29 @@ class CPU:
 
     def execute_cli(self, operand, addressing_mode):
         """Clear Interrupt flag with one-instruction latency on recognition.
-        Status bit I is updated immediately; interrupt_inhibit updates after next instruction.
+        Visible I clears now; recognition waits one FULL intervening instruction boundary.
         """
-        # Update visible I flag immediately
         self.I = 0
-        # Defer the effective recognition change by one instruction
-        # Apply at the next instruction boundary
-        self.interrupt_delay_counter = 1
-        self.interrupt_delay_pending = True
-        self.interrupt_delay_value = self.I
-        debug_print(
-            f"CPU: CLI executed, I={self.I}, will enable IRQs after 1 instruction"
-        )
+        self.last_cli_cycle = self.total_cycles
+        self.last_cli_pc = self.current_instruction_pc
+        if self.interrupt_inhibit != self.I:
+            self.pending_interrupt_inhibit = self.I
+            self.interrupt_latency_remaining = 1
+            self.interrupt_latency_armed = False
+        debug_print(f"CPU: CLI executed at PC=0x{self.current_instruction_pc:04X}, I={self.I}, latency scheduled (after one full intervening instruction)")
 
     def execute_sei(self, operand, addressing_mode):
         """Set Interrupt flag with one-instruction latency on recognition.
-        Status bit I is updated immediately; interrupt_inhibit updates after next instruction.
+        Visible I sets now; recognition waits one FULL intervening instruction boundary.
         """
-        # Update visible I flag immediately
         self.I = 1
-        # Defer the effective recognition change by one instruction
-        # Apply at the next instruction boundary
-        self.interrupt_delay_counter = 1
-        self.interrupt_delay_pending = True
-        self.interrupt_delay_value = self.I
-        debug_print(
-            f"CPU: SEI executed, I={self.I}, will mask IRQs after 1 instruction"
-        )
+        self.last_sei_cycle = self.total_cycles
+        self.last_sei_pc = self.current_instruction_pc
+        if self.interrupt_inhibit != self.I:
+            self.pending_interrupt_inhibit = self.I
+            self.interrupt_latency_remaining = 1
+            self.interrupt_latency_armed = False
+        debug_print(f"CPU: SEI executed at PC=0x{self.current_instruction_pc:04X}, I={self.I}, latency scheduled (after one full intervening instruction)")
 
     def execute_clv(self, operand, addressing_mode):
         self.V = 0
