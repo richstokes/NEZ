@@ -16,6 +16,10 @@ I had assumed that being a 40 year old, incredibly well documented platform, tha
 <p align="center">
     <img src="screenshots/c1.png" alt="Screenshot of NEZ running" width="50%">
 </p>
+<p align="center">
+    <img src="screenshots/c2.png" alt="Screenshot of NEZ running" width="50%">
+</p>
+
 
 ## Things I have found are not great when attempting this
 

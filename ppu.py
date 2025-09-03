@@ -224,9 +224,11 @@ class PPU:
         self.pending_sprite_x = [0] * 8
         self.pending_sprite_is_sprite0 = [False] * 8
         # Enable new cycle-accurate evaluation pipeline
-        self.use_new_sprite_pipeline = True
+        # Disable for now to use the stable, legacy per-scanline preparation path.
+        self.use_new_sprite_pipeline = False
         # Experimental toggles for debugging vs reference behaviour
-        self.sprite_row_experiment = True  # Try alternate row calc (start = y instead of y+1)
+        # Use the canonical row formula row = sl - (y+1); disable alternates.
+        self.sprite_row_experiment = False
         self._sprite_alt_row_hits = 0
         # Background shift timing experiment: when True, shift BG registers AFTER
         # rendering pixel (closer to real hardware sequence: fetch -> render -> shift)
@@ -234,6 +236,7 @@ class PPU:
         self.bg_shift_post_render = True
 
         # TEMP: Force sprite0 hit to verify freeze cause (will be disabled after validation)
+        # Enable by default for now to break stuck sprite0 polling loops while we refine PPU overlap logic.
         self.force_sprite0_hit_test = True
 
         # One-time logging flags for first writes

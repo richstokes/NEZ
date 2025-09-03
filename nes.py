@@ -168,8 +168,8 @@ class NES:
                 last_cycle = self.ppu.cycle
 
             if (
-                step_count > 89000
-            ):  # Safety break to prevent infinite loops (increased for NTSC frame)
+                step_count > 200000
+            ):  # Safety break to prevent infinite loops; allow plenty of headroom
                 debug_print(
                     f"DEBUG: step_frame safety break at {step_count} steps, PPU at scanline={self.ppu.scanline}, cycle={self.ppu.cycle}, mask={self.ppu.mask}, render={self.ppu.render}, frame={self.ppu.frame}"
                 )

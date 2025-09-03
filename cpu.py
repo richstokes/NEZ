@@ -804,6 +804,19 @@ class CPU:
             0xBB: self.execute_lax,
             0xBF: self.execute_lax,
             0xB3: self.execute_lax,
+            # Explicitly map all KIL/JAM opcodes to a non-halting handler
+            0x02: self.execute_kil,
+            0x12: self.execute_kil,
+            0x22: self.execute_kil,
+            0x32: self.execute_kil,
+            0x42: self.execute_kil,
+            0x52: self.execute_kil,
+            0x62: self.execute_kil,
+            0x72: self.execute_kil,
+            0x92: self.execute_kil,
+            0xB2: self.execute_kil,
+            0xD2: self.execute_kil,
+            0xF2: self.execute_kil,
         }
 
     def reset(self):
@@ -871,29 +884,29 @@ class CPU:
         """
         old_pc = self.PC
 
-        # Set current instruction PC and fetch the opcode for the next instruction
-        self.current_instruction_pc = old_pc
-        opcode = self.memory.read(self.PC)
-        fetched_pc = self.PC  # PC of this opcode (before increment)
-        self.PC = (self.PC + 1) & 0xFFFF
-
-        # AFTER-FETCH boundary: sample interrupts after we've committed to this instruction boundary.
+        # BEFORE-FETCH boundary: recognize interrupts before starting the next instruction
         if self.interrupt_pending and self.interrupt_state == 0:
             if self.interrupt_pending == "NMI":
-                debug_print(f"CPU: Starting interrupt handling for {self.interrupt_pending}, PC=0x{old_pc:04X} (after-fetch)")
+                debug_print(f"CPU: Starting interrupt handling for {self.interrupt_pending}, PC=0x{old_pc:04X} (before-fetch)")
                 self._handle_interrupt()
                 self.interrupt_pending = None
                 self.interrupt_state = 0
                 return 7
             elif self.interrupt_pending == "IRQ":
                 if self.interrupt_inhibit == 0:
-                    debug_print(f"CPU: Starting interrupt handling for {self.interrupt_pending}, PC=0x{old_pc:04X} (after-fetch)")
+                    debug_print(f"CPU: Starting interrupt handling for {self.interrupt_pending}, PC=0x{old_pc:04X} (before-fetch)")
                     self._handle_interrupt()
                     self.interrupt_pending = None
                     self.interrupt_state = 0
                     return 7
                 else:
                     debug_print(f"CPU: IRQ pending but masked at boundary (effective inhibit=1, visible I={self.I}) PC=0x{old_pc:04X}")
+
+        # Set current instruction PC and fetch the opcode for the next instruction
+        self.current_instruction_pc = old_pc
+        opcode = self.memory.read(self.PC)
+        fetched_pc = self.PC  # PC of this opcode (before increment)
+        self.PC = (self.PC + 1) & 0xFFFF
 
         # If we fetch a KIL opcode or hit the suspicious PC, dump context once
         if opcode in self.kil_opcodes or fetched_pc == 0xAE0B:
@@ -2079,11 +2092,16 @@ class CPU:
         self.memory.write(operand & 0xFFFF, value)
 
     def execute_kil(self, operand, addressing_mode):
-        """KIL - Kill/Jam the processor (halt)"""
-        # In a real 6502, this would halt the processor
-        # For emulation purposes, we'll just infinite loop by decrementing PC
+        """KIL - Kill/Jam the processor (halt)."""
+        # Decrement PC so we stay on this opcode; effectively halts execution.
         self.PC = (self.PC - 1) & 0xFFFF
+        # Dump context once for diagnosis
+        if self.jam_reported_at != self.PC:
+            self._dump_jam_context(self.PC, 0x02)
+            self.jam_reported_at = self.PC
         print(f"KIL instruction executed at PC: 0x{self.PC:04X} - processor halted")
+        # Return 0 extra cycles; step() will continue counting down and we will refetch KIL
+        return 0
 
     def execute_shx(self, operand, addressing_mode):
         """SHX (AHX) - Store X AND (high byte of effective addr + 1) at effective address"""

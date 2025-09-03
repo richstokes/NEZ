@@ -298,17 +298,17 @@ class NEZEmulator:
             )
 
         # Convert screen pixels to bytes array for SDL_UpdateTexture
-        # SDL expects ABGR8888 format: A, B, G, R bytes in sequence
+        # Texture is SDL_PIXELFORMAT_ABGR8888. On little-endian, the byte order in memory is R, G, B, A.
         pixels_bytes = bytearray(256 * 240 * 4)
 
         for i, pixel in enumerate(screen):
-            # Extract ABGR components from 32-bit pixel value
-            # Our palette is already in ABGR format from PPU
+            # Pixel is stored as ABGR (0xAABBGGRR) in a 32-bit integer
             base_idx = i * 4
-            pixels_bytes[base_idx] = pixel & 0xFF  # A
-            pixels_bytes[base_idx + 1] = (pixel >> 8) & 0xFF  # B
-            pixels_bytes[base_idx + 2] = (pixel >> 16) & 0xFF  # G
-            pixels_bytes[base_idx + 3] = (pixel >> 24) & 0xFF  # R
+            # Pack bytes in memory as R, G, B, A for ABGR8888 on little-endian
+            pixels_bytes[base_idx + 0] = (pixel >> 0) & 0xFF   # R
+            pixels_bytes[base_idx + 1] = (pixel >> 8) & 0xFF   # G
+            pixels_bytes[base_idx + 2] = (pixel >> 16) & 0xFF  # B
+            pixels_bytes[base_idx + 3] = (pixel >> 24) & 0xFF  # A
 
         # Update texture with correct byte order
         sdl2.SDL_UpdateTexture(self.texture, None, bytes(pixels_bytes), 256 * 4)
