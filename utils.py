@@ -1,10 +1,10 @@
-DEBUG_MODE = True  # Enable debug output to see what's happening
+DEBUG_MODE = False  # Default to quiet; enable via set_debug(True) when needed
 
 
 def set_debug(value):
     """
     Set debug mode on/off
-    
+
     Args:
         value (bool): True to enable debugging, False to disable
     """

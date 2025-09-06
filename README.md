@@ -8,6 +8,10 @@ Right now it can _kind_ of load some games/ROMs, but theres a ton of corruption 
 
 I had assumed that being a 40 year old, incredibly well documented platform, that the LLMs may have been able to build this relatively easily. So far it's been a nightmare, but I'm stubborn so going to keep nudging this along.
 
+Edit, September 2025: This was a horrible idea. LLMs are creating a mess. Python isn't fast enough. I will revisit this down the line and see if AI is at a point where this is less painful!
+
+
+
 ## Screenshots
 
 <p align="center">
@@ -19,6 +23,10 @@ I had assumed that being a 40 year old, incredibly well documented platform, tha
 <p align="center">
     <img src="screenshots/c2.png" alt="Screenshot of NEZ running" width="50%">
 </p>
+<p align="center">
+    <img src="screenshots/c3.png" alt="Screenshot of NEZ running" width="50%">
+</p>
+
 
 
 ## Things I have found are not great when attempting this

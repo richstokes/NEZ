@@ -184,15 +184,21 @@ class PPU:
             self.SCANLINES_PER_FRAME = 262  # NTSC - FIXED: Must be 262 to include VBlank scanlines!
 
         # PPU control flags
-        self.BG_TABLE = 1 << 4
+        # Correct bit mapping per NES PPUCTRL ($2000):
+        # bit3 = sprite pattern table select (for 8x8 sprites)
+        # bit4 = background pattern table select
         self.SPRITE_TABLE = 1 << 3
+        self.BG_TABLE = 1 << 4
+        # PPUMASK bits ($2001)
         self.SHOW_BG_8 = 1 << 1
         self.SHOW_SPRITE_8 = 1 << 2
         self.SHOW_BG = 1 << 3
         self.SHOW_SPRITE = 1 << 4
-        self.LONG_SPRITE = 1 << 5
+        self.LONG_SPRITE = 1 << 5  # PPUCTRL bit5 (8x16 sprites)
+        # PPUSTATUS bits ($2002)
         self.SPRITE_0_HIT = 1 << 6
         self.V_BLANK = 1 << 7
+        # PPUCTRL bit7 (generate NMI at vblank)
         self.GENERATE_NMI = 1 << 7
 
         # Address bit masks
@@ -224,8 +230,8 @@ class PPU:
         self.pending_sprite_x = [0] * 8
         self.pending_sprite_is_sprite0 = [False] * 8
         # Enable new cycle-accurate evaluation pipeline
-        # Disable for now to use the stable, legacy per-scanline preparation path.
-        self.use_new_sprite_pipeline = False
+        # Enable to use the more accurate per-cycle sprite evaluation and fetch path.
+        self.use_new_sprite_pipeline = True
         # Experimental toggles for debugging vs reference behaviour
         # Use the canonical row formula row = sl - (y+1); disable alternates.
         self.sprite_row_experiment = False
@@ -233,11 +239,11 @@ class PPU:
         # Background shift timing experiment: when True, shift BG registers AFTER
         # rendering pixel (closer to real hardware sequence: fetch -> render -> shift)
         # Legacy behavior (False) shifts BEFORE rendering the pixel.
+        # Switch to post-render shift (hardware-like) to avoid visual corruption.
         self.bg_shift_post_render = True
 
-        # TEMP: Force sprite0 hit to verify freeze cause (will be disabled after validation)
-        # Enable by default for now to break stuck sprite0 polling loops while we refine PPU overlap logic.
-        self.force_sprite0_hit_test = True
+        # TEMP: Force sprite0 hit to verify freeze cause (should be off in normal operation)
+        self.force_sprite0_hit_test = False
 
         # One-time logging flags for first writes
         self._logged_ppuctrl_first = False
@@ -817,7 +823,8 @@ class PPU:
         color_index = self.palette_ram[palette_addr] & 0x3F
         # Apply grayscale (PPUMASK bit0) - force upper two bits preserved, lower bits masked to 0x30 boundaries? NES: grayscale masks palette index to 0x30 steps by clearing bits 0-1-2? Actually bit0 of PPUMASK forces color emphasis to use only grayscale by AND with 0x30 and OR with bottom? We'll approximate by masking out color bits (retain universal background)."""
         if self.mask & 0x01:  # Grayscale
-            color_index &= 0x30 | (color_index & 0x0F)  # simple approximation
+            # Hardware-like: mask to grayscale by retaining only intensity bits
+            color_index &= 0x30
         color = self.nes_palette[color_index]
         # Color emphasis bits 5-7 of PPUMASK adjust RGB output (approximate)
         if self.mask & 0xE0:
@@ -1160,6 +1167,9 @@ class PPU:
                 if attr & 0x40:
                     low = self.reverse_byte(low)
                     high = self.reverse_byte(high)
+                # Targeted logging for legacy path: capture sprite0 row fetch in early visible region
+                if i == 0 and (0 <= target_scanline <= 120) and (self.frame <= 120):
+                    debug_print(f"SPR0 PATFETCH (legacy): frame={self.frame} sl={target_scanline} row={row} tile=0x{tile:02X} low=0x{low:02X} high=0x{high:02X} attr=0x{attr:02X} x={x_pos}")
                 self.prep_sprite_indices[count] = i
                 self.sprite_shift_low[count] = low
                 self.sprite_shift_high[count] = high
