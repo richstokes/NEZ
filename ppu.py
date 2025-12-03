@@ -471,7 +471,19 @@ class PPU:
             ):
                 # Correct horizontal scroll reload timing (was 258)
                 self.copy_x()
-
+            
+            # Pre-fetch first 2 tiles for next scanline (cycles 321-336)
+            # This is critical for sprite 0 hit to work correctly!
+            elif 321 <= self.cycle <= 336 and (self.mask & self.SHOW_BG):
+                self.fetch_background_data()
+                # Shift registers after each fetch cycle
+                self.bg_shift_pattern_low = (self.bg_shift_pattern_low << 1) & 0xFFFF
+                self.bg_shift_pattern_high = (self.bg_shift_pattern_high << 1) & 0xFFFF
+                self.bg_shift_attrib_low = (self.bg_shift_attrib_low << 1) & 0xFFFF
+                self.bg_shift_attrib_high = (self.bg_shift_attrib_high << 1) & 0xFFFF
+                # Increment X at appropriate cycles (328, 336)
+                if self.cycle == 328 or self.cycle == 336:
+                    self.increment_x()
 
         # Post-render scanline (240) - do nothing
         elif self.scanline == self.VISIBLE_SCANLINES:
@@ -510,8 +522,7 @@ class PPU:
                 self.status &= ~self.V_BLANK
                 self.status &= ~self.SPRITE_0_HIT
                 self.status &= ~0x20
-
-            # Copy Y position from temp register during pre-render
+            # Copy Y position
             elif 280 <= self.cycle <= 304 and (
                 self.mask & (self.SHOW_BG | self.SHOW_SPRITE)
             ):
@@ -526,6 +537,16 @@ class PPU:
                 self.mask & (self.SHOW_BG | self.SHOW_SPRITE)
             ):
                 self.copy_x()
+
+            # Pre-fetch first 2 tiles for scanline 0 (cycles 321-336)
+            elif 321 <= self.cycle <= 336 and (self.mask & self.SHOW_BG):
+                self.fetch_background_data()
+                self.bg_shift_pattern_low = (self.bg_shift_pattern_low << 1) & 0xFFFF
+                self.bg_shift_pattern_high = (self.bg_shift_pattern_high << 1) & 0xFFFF
+                self.bg_shift_attrib_low = (self.bg_shift_attrib_low << 1) & 0xFFFF
+                self.bg_shift_attrib_high = (self.bg_shift_attrib_high << 1) & 0xFFFF
+                if self.cycle == 328 or self.cycle == 336:
+                    self.increment_x()
 
             # Skip cycle on odd frames if rendering is enabled (NTSC ONLY)
             elif (
@@ -789,11 +810,11 @@ class PPU:
                 return
             return
 
-        # COMMIT at cycle 0 of next scanline (after increment) - handled when cycle resets to 0 (previous scanline end)
-        # We'll perform commit at cycle 0 before any pixel of new scanline is rendered
-        if cyc == 0:  # start of a new scanline (after increment in main loop)
-            # When entering a visible scanline, transfer pending data to active registers
-            if sl < 240 and preparing_visible:
+        # COMMIT at cycle 0 of next scanline - transfer pending data to active registers
+        # The pending buffers were filled during the PREVIOUS scanline for THIS scanline
+        if cyc == 0:
+            # Commit sprites for visible scanlines (0-239)
+            if sl < 240:
                 self.sprite_count = self.pending_sprite_count
                 for i in range(self.sprite_count):
                     self.prep_sprite_indices[i] = self.pending_sprite_indices[i]
@@ -955,7 +976,7 @@ class PPU:
             self.bg_shift_pattern_low = (self.bg_shift_pattern_low & 0x00FF) | (self.bg_low_byte << 8)
             self.bg_shift_pattern_high = (self.bg_shift_pattern_high & 0x00FF) | (self.bg_high_byte << 8)
             
-            # Expand attribute bits to fill 8 pixels
+            # Expand attribute bits
             # Extract the 2-bit palette for this tile
             attr_bits = (self.at_byte >> ((self.v >> 4) & 4 | self.v & 2)) & 0x3
             attr_low = 0xFF if (attr_bits & 1) else 0
