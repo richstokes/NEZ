@@ -3,8 +3,6 @@ NES PPU (Picture Processing Unit) Emulator
 Handles graphics rendering for the NES
 """
 
-from utils import debug_print
-
 
 class PPU:
     def __init__(self, memory, region='NTSC'):
@@ -230,27 +228,8 @@ class PPU:
         self.pending_sprite_x = [0] * 8
         self.pending_sprite_is_sprite0 = [False] * 8
         # Enable new cycle-accurate evaluation pipeline
-        # Enable to use the more accurate per-cycle sprite evaluation and fetch path.
+        # Use cycle-accurate sprite evaluation pipeline
         self.use_new_sprite_pipeline = True
-        # Experimental toggles for debugging vs reference behaviour
-        # Use the canonical row formula row = sl - (y+1); disable alternates.
-        self.sprite_row_experiment = False
-        self._sprite_alt_row_hits = 0
-        # Background shift timing experiment: when True, shift BG registers AFTER
-        # rendering pixel (closer to real hardware sequence: fetch -> render -> shift)
-        # Legacy behavior (False) shifts BEFORE rendering the pixel.
-        # Switch to post-render shift (hardware-like) to avoid visual corruption.
-        self.bg_shift_post_render = True
-
-        # TEMP: Force sprite0 hit to verify freeze cause (should be off in normal operation)
-        self.force_sprite0_hit_test = False
-
-        # One-time logging flags for first writes
-        self._logged_ppuctrl_first = False
-        self._logged_ppumask_first = False
-
-        # Limit logging of VRAM address/data writes per frame
-        self.vram_write_log_count = 0
 
     def reset(self):
         """Reset PPU to initial state"""
@@ -274,28 +253,13 @@ class PPU:
 
         self.buffer = 0
         self.bus = 0
-        self.bus_decay_timer = [0] * 8  # Reset decay timers
-        self.vram_write_log_count = 0
+        self.bus_decay_timer = [0] * 8
 
     def read_register(self, addr):
         """Read from PPU register with proper open bus behavior"""
         if addr == 0x2002:  # PPUSTATUS
-            # PPUSTATUS: bits 7-5 are defined, bits 4-0 are open bus
             result = (self.status & 0xE0) | (self.bus & 0x1F)
-
-            # Reading PPUSTATUS returns current flags then immediately clears VBlank (bit7) only.
-            # Sprite 0 hit (bit6) and overflow (bit5) persist until pre-render line dot 1.
-            if result & 0x80:
-                debug_print(
-                    f"PPU: Read PPUSTATUS=0x{result:02X} (VBlank set) scanline={self.scanline} cycle={self.cycle} frame={self.frame}"
-                )
-            elif result & 0x40:
-                debug_print(
-                    f"PPU: Read PPUSTATUS=0x{result:02X} (Sprite0Hit) scanline={self.scanline} cycle={self.cycle} frame={self.frame}"
-                )
-
-            # Clear VBlank bit (bit7) immediately per hardware behavior
-            self.status &= ~0x80
+            self.status &= ~0x80  # Clear VBlank bit
             self.w = 0
 
             # Refresh bits 7-5 from original value (open bus decay simulation for defined bits)
@@ -344,68 +308,14 @@ class PPU:
         self.refresh_bus_bits(0xFF, value)
 
         if addr == 0x2000:  # PPUCTRL
-            old_ctrl = self.ctrl
             self.ctrl = value
             self.t = (self.t & 0xF3FF) | ((value & 0x03) << 10)
-            # Debug PPUCTRL writes, especially background pattern table selection
-            if (old_ctrl & self.BG_TABLE) != (value & self.BG_TABLE):
-                bg_table = (
-                    "1 (0x1000-0x1FFF)"
-                    if (value & self.BG_TABLE)
-                    else "0 (0x0000-0x0FFF)"
-                )
-                debug_print(
-                    f"PPU: PPUCTRL background pattern table changed to {bg_table}, ctrl=0x{value:02X}, frame={self.frame}"
-                )
-            if self.frame < 10:
-                sp_table = "1 (0x1000)" if (value & self.SPRITE_TABLE) else "0 (0x0000)"
-                nmi = 'on' if (value & 0x80) else 'off'
-                debug_print(f"PPU: WRITE $2000=0x{value:02X} (BGtbl={(value>>4)&1} SPRtbl={(value>>3)&1} NMI={nmi}) frame={self.frame} scanline={self.scanline} cycle={self.cycle}")
-            else:
-                # Persistent logging of sprite/background table changes after early init if bits change
-                changed_bits = (old_ctrl ^ value) & (self.BG_TABLE | self.SPRITE_TABLE | 0x80)
-                if changed_bits:
-                    debug_print(
-                        f"PPU: WRITE $2000=0x{value:02X} (BGtbl={(value>>4)&1} SPRtbl={(value>>3)&1} NMI={'1' if (value & 0x80) else '0'}) frame={self.frame} sl={self.scanline} cyc={self.cycle} (changed bits)"
-                    )
-            if not self._logged_ppuctrl_first:
-                self._logged_ppuctrl_first = True
-                debug_print(f"PPU: FIRST $2000 write value=0x{value:02X} BGtable={(value>>4)&1} SPRtable={(value>>3)&1} NMI={'1' if (value & 0x80) else '0'}")
         elif addr == 0x2001:  # PPUMASK
-            old_mask = self.mask
-            debug_print(
-                f"PPU: Writing mask register: old={self.mask:02x}, new={value:02x}"
-            )
             self.mask = value
-            # Debug when rendering is enabled/disabled
-            if (old_mask & (self.SHOW_BG | self.SHOW_SPRITE)) != (
-                value & (self.SHOW_BG | self.SHOW_SPRITE)
-            ):
-                if value & (self.SHOW_BG | self.SHOW_SPRITE):
-                    debug_print(
-                        f"PPU: RENDERING ENABLED at frame {self.frame}, mask=0x{value:02X}"
-                    )
-                else:
-                    debug_print(
-                        f"PPU: RENDERING DISABLED at frame {self.frame}, mask=0x{value:02X}"
-                    )
-            if self.frame < 10:
-                bg_on = bool(value & self.SHOW_BG)
-                spr_on = bool(value & self.SHOW_SPRITE)
-                debug_print(f"PPU: WRITE $2001=0x{value:02X} (BG={'on' if bg_on else 'off'} SPR={'on' if spr_on else 'off'}) frame={self.frame} scanline={self.scanline} cycle={self.cycle}")
-            if not self._logged_ppumask_first:
-                self._logged_ppumask_first = True
-                debug_print(f"PPU: FIRST $2001 write value=0x{value:02X}")
         elif addr == 0x2003:  # OAMADDR
             self.oam_addr = value
         elif addr == 0x2004:  # OAMDATA
             self.oam[self.oam_addr] = value
-            # Debug sprite 0 writes during early frames
-            if self.oam_addr <= 3 and self.frame >= 0 and self.frame < 50:
-                sprite_part = ["Y", "Tile", "Attr", "X"][self.oam_addr]
-                debug_print(
-                    f"PPU: Sprite 0 {sprite_part}={value} written to OAM[{self.oam_addr}], frame={self.frame}"
-                )
             self.oam_addr = (self.oam_addr + 1) & 0xFF
         elif addr == 0x2005:  # PPUSCROLL
             if self.w == 0:
@@ -420,24 +330,12 @@ class PPU:
             if self.w == 0:
                 self.t = (self.t & 0x80FF) | ((value & 0x3F) << 8)
                 self.w = 1
-                if self.vram_write_log_count < 64:
-                    debug_print(f"PPU: $2006 write high value=0x{value:02X}, t=0x{self.t:04X}")
-                    self.vram_write_log_count += 1
             else:
                 self.t = (self.t & 0xFF00) | value
                 self.v = self.t
                 self.w = 0
-                if self.vram_write_log_count < 64:
-                    debug_print(f"PPU: $2006 write low value=0x{value:02X}, v=0x{self.v:04X}")
-                    self.vram_write_log_count += 1
         elif addr == 0x2007:  # PPUDATA
-            addr_for_log = self.v
             self.write_vram(self.v, value)
-
-            if self.vram_write_log_count < 64:
-                debug_print(f"PPU: $2007 write addr=0x{addr_for_log:04X}, value=0x{value:02X}")
-                self.vram_write_log_count += 1
-
             # Increment VRAM address
             if self.ctrl & 0x04:
                 self.v = (self.v + 32) & 0x7FFF
@@ -506,12 +404,6 @@ class PPU:
             nametable_index = addr // 0x400  # Which nametable (0-3)
             offset_in_table = addr & 0x3FF  # Offset within that nametable
 
-            # Debug VRAM writes during early frames
-            if self.frame >= 0 and self.frame < 50 and value != 0:
-                debug_print(
-                    f"VRAM Write: addr=0x{addr + 0x2000:04X}, nt={nametable_index}, offset=0x{offset_in_table:03X}, value=0x{value:02X}, frame={self.frame}"
-                )
-
             # Get mapping from cartridge
             if hasattr(self.memory, "cartridge") and self.memory.cartridge:
                 mapped_offset = self.memory.cartridge.name_table_map[nametable_index]
@@ -539,63 +431,21 @@ class PPU:
             self._sprite_pipeline_step()
         # Visible scanlines (0-239)
         if self.scanline < self.VISIBLE_SCANLINES:
-            # Sprite evaluation now happens at cycle 257 for NEXT scanline via prepare_sprites
             if self.cycle > 0 and self.cycle <= self.VISIBLE_DOTS:
-                # Debug: Check rendering conditions
-                if (
-                    self.frame >= 70
-                    and self.frame <= 72
-                    and self.scanline == 0
-                    and self.cycle == 1
-                ):
-                    debug_print(
-                        f"PPU step: frame={self.frame}, scanline={self.scanline}, cycle={self.cycle}, mask=0x{self.mask:02x}"
-                    )
-                    debug_print(
-                        f"PPU step: SHOW_BG={self.SHOW_BG}, SHOW_SPRITE={self.SHOW_SPRITE}, mask&check={self.mask & (self.SHOW_BG | self.SHOW_SPRITE)}"
-                    )
-
-                # Background tile fetching (may reload upper 8 bits when cycle_in_tile==7)
+                # Background tile fetching
                 if self.mask & self.SHOW_BG:
                     self.fetch_background_data()
-
-                # Render pixel BEFORE shifting if experiment enabled
-                if not self.bg_shift_post_render:
-                    # Legacy behavior: shift before rendering
-                    if self.mask & self.SHOW_BG:
-                        self.bg_shift_pattern_low <<= 1
-                        self.bg_shift_pattern_high <<= 1
-                        self.bg_shift_attrib_low <<= 1
-                        self.bg_shift_attrib_high <<= 1
-                        self.bg_shift_pattern_low &= 0xFFFF
-                        self.bg_shift_pattern_high &= 0xFFFF
-                        self.bg_shift_attrib_low &= 0xFFFF
-                        self.bg_shift_attrib_high &= 0xFFFF
                 
                 # Render pixel if rendering is enabled
                 if self.mask & (self.SHOW_BG | self.SHOW_SPRITE):
                     self.render_pixel()
-                # Post-render shift (new experiment)
-                if self.bg_shift_post_render and (self.mask & self.SHOW_BG):
-                    self.bg_shift_pattern_low <<= 1
-                    self.bg_shift_pattern_high <<= 1
-                    self.bg_shift_attrib_low <<= 1
-                    self.bg_shift_attrib_high <<= 1
-                    self.bg_shift_pattern_low &= 0xFFFF
-                    self.bg_shift_pattern_high &= 0xFFFF
-                    self.bg_shift_attrib_low &= 0xFFFF
-                    self.bg_shift_attrib_high &= 0xFFFF
-                else:
-                    # Debug: Why isn't rendering enabled?
-                    if (
-                        self.frame >= 70
-                        and self.frame <= 72
-                        and self.scanline == 0
-                        and self.cycle == 1
-                    ):
-                        debug_print(
-                            f"PPU step: Rendering NOT enabled, mask=0x{self.mask:02x}, required={(self.SHOW_BG | self.SHOW_SPRITE):02x}"
-                        )
+                
+                # Shift BG registers after rendering (hardware-accurate timing)
+                if self.mask & self.SHOW_BG:
+                    self.bg_shift_pattern_low = (self.bg_shift_pattern_low << 1) & 0xFFFF
+                    self.bg_shift_pattern_high = (self.bg_shift_pattern_high << 1) & 0xFFFF
+                    self.bg_shift_attrib_low = (self.bg_shift_attrib_low << 1) & 0xFFFF
+                    self.bg_shift_attrib_high = (self.bg_shift_attrib_high << 1) & 0xFFFF
 
                 # Handle horizontal scrolling - NES timing: increment coarse X at cycles 8,16,...,256 (when (cycle % 8)==0)
                 if (self.cycle % 8) == 0 and (self.mask & self.SHOW_BG):
@@ -637,87 +487,29 @@ class PPU:
             self.scanline += 1
             # NTSC: scanlines 0-261 (262 total), where scanlines 241-260 are VBlank
             # Only reset to 0 when we go past the last scanline (261)
-            if self.scanline > 261:  # FIXED: Use > 261 instead of >= 262
+            if self.scanline > 261:
                 self.scanline = 0
                 self.frame += 1
-                # CRITICAL: Set render flag to true to exit the frame loop
                 self.render = True
-                debug_print(f"PPU: Frame {self.frame} complete, signaling render=True")
 
-                # Clear sprite zero tracking flag for new frame
-                if hasattr(self, '_sprite_zero_set_this_frame'):
-                    delattr(self, '_sprite_zero_set_this_frame')
-
-                # Debug information to track the frame transition
-                sprite0_y = self.oam[0]
-                sprite0_tile = self.oam[1]
-                sprite0_x = self.oam[3]
-                # Enhanced per-frame summary (no hacks). Include ctrl/mask/status & pattern table selections.
-                ctrl = self.ctrl
-                mask = self.mask
-                status = self.status
-                bg_tbl = 1 if (ctrl & self.BG_TABLE) else 0
-                spr_tbl = 1 if (ctrl & self.SPRITE_TABLE) else 0
-                long_sprite = 1 if (ctrl & self.LONG_SPRITE) else 0
-                show_bg = 1 if (mask & self.SHOW_BG) else 0
-                show_spr = 1 if (mask & self.SHOW_SPRITE) else 0
-                debug_print(
-                    f"PPU: New frame start f={self.frame} Sprite0(Y={sprite0_y} Tile=0x{sprite0_tile:02X} X={sprite0_x}) CTRL=0x{ctrl:02X}(BGtbl={bg_tbl} SPRtbl={spr_tbl} 8x16={long_sprite}) MASK=0x{mask:02X}(BG={show_bg} SPR={show_spr}) STATUS=0x{status:02X}"
-                )
-                # Reset per-frame VRAM write logging limit
-                self.vram_write_log_count = 0
-                # Prepare sprites for first scanline (0) of new frame
-                if not self.use_new_sprite_pipeline:
-                    self.prepare_sprites(0)
-
-        # VBlank scanlines (241-260) - CHECK AFTER CYCLE INCREMENT
+        # VBlank scanlines (241-260)
         if 241 <= self.scanline <= 260:
             if self.scanline == 241 and self.cycle == 1:
-                debug_print(
-                    f"PPU: Setting VBlank flag at scanline={self.scanline}, cycle={self.cycle}, frame={self.frame}"
-                )
-                # Set VBlank flag ONLY here (sprite0 hit should NOT be cleared until pre-render line 261, cycle 1)
                 old_status = self.status
-                self.status |= self.V_BLANK  # Set VBlank flag
-                # DO NOT clear SPRITE_0_HIT here (hardware keeps it latched through VBlank)
-                debug_print(f"PPU: VBlank flag set (sprite0 hit preserved), old=0x{old_status:02X} new=0x{self.status:02X} frame={self.frame}")
-                
-                # Mark that VBlank has been set this frame (for debugging)
-                self.vblank_set_this_frame = True
-
-                # Check for VBlank NMI transition immediately (before CPU can read status)
+                self.status |= self.V_BLANK
+                # Trigger NMI if enabled and VBlank just became set
                 if (self.status & 0x80) and not (old_status & 0x80):
-                    if self.ctrl & 0x80:  # NMI enabled
-                        debug_print(
-                            f"PPU: VBlank NMI triggered immediately! CTRL={self.ctrl:02x}, frame={self.frame}"
-                        )
-                        # Trigger NMI through the memory system to the NES
-                        if hasattr(self.memory, "nes") and hasattr(
-                            self.memory.nes, "trigger_nmi"
-                        ):
+                    if self.ctrl & 0x80:
+                        if hasattr(self.memory, "nes") and hasattr(self.memory.nes, "trigger_nmi"):
                             self.memory.nes.trigger_nmi()
-                        else:
-                            debug_print(
-                                "PPU: Warning - cannot trigger NMI, no NES reference found"
-                            )
 
-        # Pre-render scanline (261) - CHECK AFTER CYCLE INCREMENT
+        # Pre-render scanline (261)
         elif self.scanline == 261:
             if self.cycle == 1:
-                # Clear VBlank, Sprite 0 hit, and Sprite Overflow at start of pre-render scanline
-                old_status = self.status
+                # Clear VBlank, Sprite 0 hit, and Sprite Overflow
                 self.status &= ~self.V_BLANK
-                if self.status & self.SPRITE_0_HIT:
-                    debug_print(f"PPU: Sprite0 hit CLEAR (pre-render) frame={self.frame} old_status=0x{old_status:02X}")
                 self.status &= ~self.SPRITE_0_HIT
-                self.status &= ~0x20  # Clear sprite overflow
-                debug_print(
-                    f"PPU: Pre-render clearing flags (VBlank, Sprite0Hit, Overflow), old_status=0x{old_status:02X}, new_status=0x{self.status:02X}, frame={self.frame}"
-                )
-                
-                # Reset VBlank read counter for next frame
-                if hasattr(self, 'vblank_read_count'):
-                    delattr(self, 'vblank_read_count')
+                self.status &= ~0x20
 
             # Copy Y position from temp register during pre-render
             elif 280 <= self.cycle <= 304 and (
@@ -744,36 +536,19 @@ class PPU:
             ):
                 self.cycle += 1
 
-        # Check for oscillation (repeating the same position)
-        if prev_scanline == self.scanline and prev_cycle == self.cycle:
-            debug_print(
-                f"PPU WARNING: Potential oscillation detected at scanline={self.scanline}, cycle={self.cycle}, frame={self.frame}"
-            )
-            # Force increment to break potential infinite loop
-            self.cycle += 1
-
     def render_pixel(self):
-        """Render a single pixel - based on reference implementation"""
-        # ALWAYS debug - to confirm this function is called
-        if self.frame > 30 and self.scanline == 0 and self.cycle <= 3:
-            debug_print(
-                f"render_pixel: frame={self.frame}, scanline={self.scanline}, cycle={self.cycle}"
-            )
-
+        """Render a single pixel"""
         x = self.cycle - 1
         y = self.scanline
 
         if x >= 256 or y >= 240:
             return
 
-    # Get background pixel
+        # Get background pixel
         bg_pixel = 0
         bg_palette = 0
-
         if self.mask & self.SHOW_BG:
-            if x >= 8 or (
-                self.mask & self.SHOW_BG_8
-            ):  # Show background in leftmost 8 pixels
+            if x >= 8 or (self.mask & self.SHOW_BG_8):
                 bg_pixel = self.render_background()
                 bg_palette = bg_pixel >> 2
                 bg_pixel &= 0x3
@@ -783,21 +558,14 @@ class PPU:
         sprite_palette = 0
         sprite_priority = 0
         sprite_zero = False
-
         if self.mask & self.SHOW_SPRITE:
-            if x >= 8 or (
-                self.mask & self.SHOW_SPRITE_8
-            ):  # Show sprites in leftmost 8 pixels
+            if x >= 8 or (self.mask & self.SHOW_SPRITE_8):
                 sprite_info = self.render_sprites(bg_pixel)
                 if sprite_info:
                     sprite_pixel = sprite_info & 0x3
                     sprite_palette = (sprite_info >> 2) & 0x3
                     sprite_priority = (sprite_info >> 5) & 1
                     sprite_zero = (sprite_info >> 6) & 1
-
-        # Background probe around sprite0 test window (temporary diagnostics)
-        if (self.frame % 4 == 0) and (28 <= y <= 33) and (80 <= x <= 100):
-            debug_print(f"BG PIXEL PROBE: frame={self.frame} sl={y} x={x} bg_before_final={bg_pixel}")
 
         # Determine final pixel color
         palette_addr = 0
@@ -826,43 +594,19 @@ class PPU:
             # Hardware-like: mask to grayscale by retaining only intensity bits
             color_index &= 0x30
         color = self.nes_palette[color_index]
-        # Color emphasis bits 5-7 of PPUMASK adjust RGB output (approximate)
+        # Color emphasis bits 5-7 of PPUMASK adjust RGB output
         if self.mask & 0xE0:
-            r = (color & 0xFF)
+            r = color & 0xFF
             g = (color >> 8) & 0xFF
             b = (color >> 16) & 0xFF
-            if self.mask & 0x20:  # Emphasize red
+            if self.mask & 0x20:  # Red
                 r = min(255, int(r * 1.1))
-            if self.mask & 0x40:  # Emphasize green
+            if self.mask & 0x40:  # Green
                 g = min(255, int(g * 1.1))
-            if self.mask & 0x80:  # Emphasize blue
+            if self.mask & 0x80:  # Blue
                 b = min(255, int(b * 1.1))
             color = (color & 0xFF000000) | (b << 16) | (g << 8) | r
-        # Debug output for first few pixels to see what's being rendered
-        if self.frame >= 34 and self.frame < 36 and y < 3 and x < 10:
-            debug_print(
-                f"Pixel ({x},{y}): bg={bg_pixel}, sprite={sprite_pixel}, mask=0x{self.mask:02x}, palette_addr=0x{palette_addr:02X}, final_color=0x{color:08X}"
-            )
 
-        # Additional debug to confirm render_pixel is being called
-        if self.frame == 71 and y == 0 and x == 0:
-            debug_print(
-                f"render_pixel called at frame {self.frame}, mask=0x{self.mask:02x}, bg_enabled={bool(self.mask & self.SHOW_BG)}, sprite_enabled={bool(self.mask & self.SHOW_SPRITE)}"
-            )
-
-        # Debug output for first few pixels to see what's being rendered
-        # Focused probe: region where sprite0 overlap expected (approx x 88-94, y 30-32)
-        if (self.frame >= 31) and (30 <= y <= 32) and (88 <= x <= 94) and (self.frame % 29 == 2):
-            debug_print(
-                f"PPU PROBE: frame={self.frame} x={x} y={y} bg_pixel={bg_pixel} sprite_pixel={sprite_pixel} fineX={self.x} v=0x{self.v:04X} shift_low=0x{self.bg_shift_pattern_low:04X} shift_high=0x{self.bg_shift_pattern_high:04X} attr_low=0x{self.bg_shift_attrib_low:04X} attr_high=0x{self.bg_shift_attrib_high:04X}"
-            )
-        # Relaxed probe: always log a couple early frames (31-36) without modulus filter
-        if (31 <= self.frame <= 36) and (30 <= y <= 32) and (88 <= x <= 94):
-            debug_print(
-                f"PPU PROBE2: frame={self.frame} x={x} y={y} bg_pixel={bg_pixel} sprite_pixel={sprite_pixel} fineX={self.x} v=0x{self.v:04X} shift_low=0x{self.bg_shift_pattern_low:04X} shift_high=0x{self.bg_shift_pattern_high:04X} attr_low=0x{self.bg_shift_attrib_low:04X} attr_high=0x{self.bg_shift_attrib_high:04X}"
-            )
-
-        # Store pixel in screen buffer
         self.screen[y * 256 + x] = color
 
     def render_background(self):
@@ -888,29 +632,8 @@ class PPU:
         pattern_pixel = pattern_low_bit | (pattern_high_bit << 1)
 
         if pattern_pixel == 0:
-            # Extra diagnostic: if raw shift registers have any non-zero high bits about to scroll out while pixel ends up 0
-            if (24 <= self.scanline <= 50) and (70 <= x <= 140) and (28 <= self.frame <= 90):
-                raw_low = self.bg_shift_pattern_low
-                raw_high = self.bg_shift_pattern_high
-                # Determine upcoming 4 bits (current tap and next three) for visibility
-                window_mask = 0
-                for i in range(4):
-                    idx = tap_index - i
-                    if 0 <= idx <= 15:
-                        window_mask |= 1 << idx
-                upcoming_low = (raw_low & window_mask) >> max(tap_index-3,0)
-                upcoming_high = (raw_high & window_mask) >> max(tap_index-3,0)
-                if (raw_low | raw_high) & 0xFFFF:
-                    debug_print(
-                        f"BG ZERO DIAG: f={self.frame} sl={self.scanline} x={x} cyc={self.cycle} fineX={fine_x} tap={tap_index} low=0x{raw_low:04X} high=0x{raw_high:04X} upLow=0x{upcoming_low:X} upHigh=0x{upcoming_high:X} atL=0x{self.bg_shift_attrib_low:04X} atH=0x{self.bg_shift_attrib_high:04X} v=0x{self.v:04X}"
-                    )
             return 0
-        else:
-            # Optional positive diagnostic to correlate when BG actually non-zero near sprite0 region
-            if (24 <= self.scanline <= 50) and (70 <= x <= 140) and (28 <= self.frame <= 90) and (self.frame % 8 == 0):
-                debug_print(
-                    f"BG NONZERO: f={self.frame} sl={self.scanline} x={x} cyc={self.cycle} fineX={fine_x} tap={tap_index} pix={pattern_pixel} low=0x{self.bg_shift_pattern_low:04X} high=0x{self.bg_shift_pattern_high:04X} v=0x{self.v:04X}"
-                )
+
         attrib_low_bit = (self.bg_shift_attrib_low >> (15 - fine_x)) & 1
         attrib_high_bit = (self.bg_shift_attrib_high >> (15 - fine_x)) & 1
         palette_index = attrib_low_bit | (attrib_high_bit << 1)
@@ -939,36 +662,16 @@ class PPU:
             palette = attr & 0x3
             priority = (attr >> 5) & 1
             is_sprite0 = self.sprite_is_sprite0[i]
-            # Sprite0 hit
-            overlap_conditions = (
-                is_sprite0
-                and pixel > 0
-                and bg_pix > 0
-                and x < 255
-                and (self.mask & self.SHOW_BG)
-                and (self.mask & self.SHOW_SPRITE)
+            
+            # Sprite 0 hit detection
+            if (is_sprite0 and pixel > 0 and bg_pix > 0 and x < 255
+                and (self.mask & self.SHOW_BG) and (self.mask & self.SHOW_SPRITE)
                 and not (self.status & self.SPRITE_0_HIT)
                 and not (x < 8 and not (self.mask & self.SHOW_BG_8))
-                and not (x < 8 and not (self.mask & self.SHOW_SPRITE_8))
-            )
-            # General sprite0 pixel probe (even if BG transparent) to confirm sprite rendering output
-            if is_sprite0 and pixel > 0 and (0 <= self.scanline < 240) and (0 <= x < 256) and (self.frame % 4 == 0):
-                debug_print(f"SPR0 PIXEL PROBE: frame={self.frame} sl={self.scanline} x={x} sprPix={pixel} bgPix={bg_pix} attr=0x{attr:02X}")
-            # Overlap probe before setting hit - broaden region to catch any potential overlap
-            if is_sprite0 and pixel > 0 and bg_pix > 0 and (0 <= self.scanline < 240) and (0 <= x < 256) and not (self.status & self.SPRITE_0_HIT):
-                debug_print(f"SPR0 OVERLAP PROBE: frame={self.frame} sl={self.scanline} x={x} sprPix={pixel} bgPix={bg_pix} cond={'yes' if overlap_conditions else 'no'} attr=0x{attr:02X}")
-            if overlap_conditions:
+                and not (x < 8 and not (self.mask & self.SHOW_SPRITE_8))):
                 self.status |= self.SPRITE_0_HIT
                 self.sprite_zero_hit = True
-                debug_print(
-                    f"PPU: Sprite0 hit SET frame={self.frame} x={x} y={self.scanline} spr_pixel={pixel} bg_pixel={bg_pix} attr=0x{attr:02X}"
-                )
-            # Forced hit experiment: if we see sprite0 pixel in typical title overlap band but bgPix==0, optionally set hit to test freeze logic
-            elif is_sprite0 and pixel > 0 and (28 <= self.scanline <= 33) and (80 <= x <= 100) and (self.mask & self.SHOW_BG) and (self.mask & self.SHOW_SPRITE) and not (self.status & self.SPRITE_0_HIT):
-                # DO NOT set by default; toggle flag for targeted test
-                if hasattr(self, 'force_sprite0_hit_test') and self.force_sprite0_hit_test:
-                    self.status |= self.SPRITE_0_HIT
-                    debug_print(f"FORCED SPR0 HIT: frame={self.frame} sl={self.scanline} x={x} sprPix={pixel} bgPix={bg_pix}")
+            
             return pixel | (palette << 2) | (priority << 5) | (is_sprite0 << 6)
         return 0
 
@@ -1000,12 +703,10 @@ class PPU:
 
         # PHASE 1: Clear secondary OAM cycles 1-64
         if 1 <= cyc <= 64:
-            # Each 2 cycles clears one byte in hardware; we approximate clearing all gradually
             if cyc == 1:
                 for i in range(32):
                     self.secondary_oam[i] = 0xFF
                 self.pending_sprite_count = 0
-                debug_print(f"PPU SPR-EVAL: Clear secondary OAM for target sl={target_scanline} frame={self.frame}")
             return
 
         # Stop if target not visible (we don't need pattern fetch or evaluation for scanline 240+)
@@ -1057,19 +758,8 @@ class PPU:
                     idx = self.pending_sprite_indices[slot]
                     base = idx * 4
                     y = self.oam[base]
-                    # Row calculation: classic formula row = target_scanline - (y+1)
-                    base_row = target_scanline - (y + 1)
-                    if self.sprite_row_experiment:
-                        # Alternate: treat sprite Y as top line directly (row = target - y)
-                        alt_row = target_scanline - y
-                        # Accept row if either formulation within sprite height
-                        if 0 <= alt_row < sprite_height and not (0 <= base_row < sprite_height):
-                            row = alt_row
-                            self._sprite_alt_row_hits += 1
-                        else:
-                            row = base_row
-                    else:
-                        row = base_row
+                    # Row calculation: row = target_scanline - (y+1)
+                    row = target_scanline - (y + 1)
                     attr = self.pending_sprite_attr[slot]
                     if attr & 0x80:  # vertical flip
                         row = (sprite_height - 1) - row
@@ -1096,9 +786,6 @@ class PPU:
                         high = self.reverse_byte(high)
                     self._sprite_pattern_buffer_low[slot] = low
                     self._sprite_pattern_buffer_high[slot] = high
-                    # Targeted debug for sprite0 pattern row capture (title screen freeze analysis)
-                    if idx == 0 and (0 <= target_scanline <= 80):
-                        debug_print(f"SPR0 PATFETCH: frame={self.frame} tgt_sl={target_scanline} row={row} tile=0x{tile:02X} low=0x{low:02X} high=0x{high:02X} attr=0x{attr:02X}")
                 return
             return
 
@@ -1115,15 +802,6 @@ class PPU:
                     self.sprite_latch_attr[i] = self.pending_sprite_attr[i]
                     self.sprite_latch_x[i] = self.pending_sprite_x[i]
                     self.sprite_is_sprite0[i] = self.pending_sprite_is_sprite0[i]
-                # Log sprite0 commit specifics early frames of freeze region (no frame modulus now)
-                if self.sprite_count and self.prep_sprite_indices[0] == 0 and (0 <= sl <= 120):
-                    debug_print(f"SPR0 COMMIT: frame={self.frame} sl={sl} x={self.sprite_latch_x[0]} attr=0x{self.sprite_latch_attr[0]:02X} low=0x{self.sprite_shift_low[0]:02X} high=0x{self.sprite_shift_high[0]:02X} altRowHits={self._sprite_alt_row_hits}")
-                # If sprite0 tile is still 0xFF log an OAM snapshot occasionally
-                if self.sprite_count and self.oam[1] == 0xFF and (sl % 8 == 0) and (self.frame % 16 == 0):
-                    oam_first32 = ' '.join(f"{b:02X}" for b in self.oam[:32])
-                    debug_print(f"SPR0 OAM SNAPSHOT frame={self.frame} sl={sl} first32={oam_first32}")
-                if self.frame % 47 == 0 and self.sprite_count and sl < 240:
-                    debug_print(f"PPU SPR-COMMIT: sl={sl} loaded {self.sprite_count} sprites indices={self.prep_sprite_indices[:self.sprite_count]} frame={self.frame}")
             return
 
     def prepare_sprites(self, target_scanline):
@@ -1167,9 +845,6 @@ class PPU:
                 if attr & 0x40:
                     low = self.reverse_byte(low)
                     high = self.reverse_byte(high)
-                # Targeted logging for legacy path: capture sprite0 row fetch in early visible region
-                if i == 0 and (0 <= target_scanline <= 120) and (self.frame <= 120):
-                    debug_print(f"SPR0 PATFETCH (legacy): frame={self.frame} sl={target_scanline} row={row} tile=0x{tile:02X} low=0x{low:02X} high=0x{high:02X} attr=0x{attr:02X} x={x_pos}")
                 self.prep_sprite_indices[count] = i
                 self.sprite_shift_low[count] = low
                 self.sprite_shift_high[count] = high
@@ -1185,10 +860,6 @@ class PPU:
             self.status |= 0x20
         else:
             self.status &= ~0x20
-        if (self.frame % 30 == 0) and count and target_scanline < 240:
-            debug_print(
-                f"PPU: Prepared {count} sprites for scanline {target_scanline} indices={self.prep_sprite_indices[:count]}"
-            )
 
     @staticmethod
     def reverse_byte(b: int) -> int:
@@ -1261,8 +932,6 @@ class PPU:
         if cycle_in_tile == 0:  # Cycle 1, 9, 17, 25, etc. - Fetch nametable byte
             tile_addr = 0x2000 | (self.v & 0xFFF)
             self.nt_byte = self.read_vram(tile_addr)
-            if (30 <= self.scanline <= 32) and (80 <= (self.cycle - 1) <= 100):
-                debug_print(f"BG TILE FETCH: f={self.frame} sl={self.scanline} x={(self.cycle-1)} v=0x{self.v:04X} nt=0x{self.nt_byte:02X}")
             
         elif cycle_in_tile == 2:  # Cycle 3, 11, 19, 27, etc. - Fetch attribute byte
             attr_addr = 0x23C0 | (self.v & 0x0C00) | ((self.v >> 4) & 0x38) | ((self.v >> 2) & 0x07)
@@ -1273,26 +942,12 @@ class PPU:
             if self.ctrl & self.BG_TABLE:
                 pattern_addr += 0x1000
             self.bg_low_byte = self.read_vram(pattern_addr)
-            if (30 <= self.scanline <= 32) and (80 <= (self.cycle - 1) <= 100):
-                debug_print(f"BG PAT LOW: f={self.frame} sl={self.scanline} x={(self.cycle-1)} patt_addr=0x{pattern_addr:04X} low=0x{self.bg_low_byte:02X} nt=0x{self.nt_byte:02X}")
-            # Extra debug near sprite0 region (scanlines ~24-40) every 32 frames
-            if (24 <= self.scanline <= 40) and (80 <= (self.cycle-1) <= 104) and (self.frame % 32 == 0):
-                debug_print(f"PPU BG fetch low: frame={self.frame} sl={self.scanline} cyc={self.cycle} nt=0x{self.nt_byte:02X} patt_addr=0x{pattern_addr:04X} low=0x{self.bg_low_byte:02X} v=0x{self.v:04X}")
-            # Fallback broad logging once sprite table forced (diagnostic mode) for correlation
-            if hasattr(self, '_dumped_tile_ff') and self.frame in (41,42) and (self.cycle-1) < 256 and self.scanline < 50 and (self.cycle % 64 == 5):
-                debug_print(f"PPU BG fetch low (broad): frame={self.frame} sl={self.scanline} cyc={self.cycle} nt=0x{self.nt_byte:02X} patt_addr=0x{pattern_addr:04X} low=0x{self.bg_low_byte:02X} v=0x{self.v:04X}")
             
         elif cycle_in_tile == 6:  # Cycle 7, 15, 23, 31, etc. - Fetch pattern table high byte
             pattern_addr = (self.nt_byte * 16) + ((self.v >> 12) & 0x7) + 8
             if self.ctrl & self.BG_TABLE:
                 pattern_addr += 0x1000
             self.bg_high_byte = self.read_vram(pattern_addr)
-            if (30 <= self.scanline <= 32) and (80 <= (self.cycle - 1) <= 100):
-                debug_print(f"BG PAT HIGH: f={self.frame} sl={self.scanline} x={(self.cycle-1)} patt_addr=0x{pattern_addr:04X} high=0x{self.bg_high_byte:02X} nt=0x{self.nt_byte:02X}")
-            if (24 <= self.scanline <= 40) and (80 <= (self.cycle-1) <= 104) and (self.frame % 32 == 0):
-                debug_print(f"PPU BG fetch high: frame={self.frame} sl={self.scanline} cyc={self.cycle} nt=0x{self.nt_byte:02X} patt_addr=0x{pattern_addr:04X} high=0x{self.bg_high_byte:02X} v=0x{self.v:04X}")
-            if hasattr(self, '_dumped_tile_ff') and self.frame in (41,42) and (self.cycle-1) < 256 and self.scanline < 50 and (self.cycle % 64 == 7):
-                debug_print(f"PPU BG fetch high (broad): frame={self.frame} sl={self.scanline} cyc={self.cycle} nt=0x{self.nt_byte:02X} patt_addr=0x{pattern_addr:04X} high=0x{self.bg_high_byte:02X} v=0x{self.v:04X}")
             
         elif cycle_in_tile == 7:  # Cycle 8, 16, 24, 32, etc. - Load shift registers
             # CRITICAL FIX: Load the UPPER 8 bits of shift registers with new tile data

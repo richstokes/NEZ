@@ -12,7 +12,6 @@ from PIL import Image
 import io
 from nes import NES
 from performance_config import apply_optimizations
-from utils import debug_print
 
 
 class NEZEmulator:
@@ -217,9 +216,6 @@ class NEZEmulator:
     def handle_events(self):
         """Handle SDL events"""
         event = sdl2.SDL_Event()
-
-        # debug_print(f"Handling events - {self.running}")
-
         while sdl2.SDL_PollEvent(event):
             if event.type == sdl2.SDL_QUIT:
                 self.running = False
@@ -259,11 +255,6 @@ class NEZEmulator:
         # Update controller input
         self.nes.set_controller_input(1, self.controller_state)
 
-        # Debug: Log controller input when pressed
-        active_buttons = [btn for btn, state in self.controller_state.items() if state]
-        if active_buttons:
-            debug_print(f"Controller input: {active_buttons}")
-
     def handle_keyup(self, key):
         """Handle key release"""
         if key == sdl2.SDLK_j:  # A button (match reference: J)
@@ -287,15 +278,8 @@ class NEZEmulator:
         self.nes.set_controller_input(1, self.controller_state)
 
     def update_texture(self):
-        """Update SDL texture with NES screen data - matching reference implementation"""
+        """Update SDL texture with NES screen data"""
         screen = self.nes.get_screen()
-
-        # Debug: Check if screen has non-zero pixels
-        non_zero_pixels = sum(1 for pixel in screen if pixel != 0)
-        if non_zero_pixels > 0:
-            debug_print(
-                f"Screen has {non_zero_pixels} non-zero pixels, first few: {screen[:10]}"
-            )
 
         # Convert screen pixels to bytes array for SDL_UpdateTexture
         # Texture is SDL_PIXELFORMAT_ABGR8888. On little-endian, the byte order in memory is R, G, B, A.

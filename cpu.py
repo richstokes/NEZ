@@ -4,13 +4,9 @@ Implements the MOS Technology 6502 processor used in the NES
 Hardware-accurate cycle timing and behavior based on reference implementation
 """
 
-from utils import debug_print
-
-
 class CPU:
     def __init__(self, memory):
         self.memory = memory
-        debug_print("CPU: INIT build v1.1 latency-no-grace immediate-post-apply-sample")
 
         # Registers
         self.A = 0  # Accumulator
@@ -27,11 +23,7 @@ class CPU:
         # Jam reporting guard to avoid spamming
         self.jam_reported_at = None
 
-        # Small trace history ring buffer for last instructions
-        self.trace_history = []  # list of dict entries
-        self.max_trace_history = 16
-
-        # Track current instruction PC for targeted debugging
+        # Track current instruction PC
         self.current_instruction_pc = 0
 
         # Interrupt context tracking
@@ -887,20 +879,16 @@ class CPU:
         # BEFORE-FETCH boundary: recognize interrupts before starting the next instruction
         if self.interrupt_pending and self.interrupt_state == 0:
             if self.interrupt_pending == "NMI":
-                debug_print(f"CPU: Starting interrupt handling for {self.interrupt_pending}, PC=0x{old_pc:04X} (before-fetch)")
                 self._handle_interrupt()
                 self.interrupt_pending = None
                 self.interrupt_state = 0
                 return 7
             elif self.interrupt_pending == "IRQ":
                 if self.interrupt_inhibit == 0:
-                    debug_print(f"CPU: Starting interrupt handling for {self.interrupt_pending}, PC=0x{old_pc:04X} (before-fetch)")
                     self._handle_interrupt()
                     self.interrupt_pending = None
                     self.interrupt_state = 0
                     return 7
-                else:
-                    debug_print(f"CPU: IRQ pending but masked at boundary (effective inhibit=1, visible I={self.I}) PC=0x{old_pc:04X}")
 
         # Set current instruction PC and fetch the opcode for the next instruction
         self.current_instruction_pc = old_pc
@@ -908,13 +896,11 @@ class CPU:
         fetched_pc = self.PC  # PC of this opcode (before increment)
         self.PC = (self.PC + 1) & 0xFFFF
 
-        # If we fetch a KIL opcode or hit the suspicious PC, dump context once
-        if opcode in self.kil_opcodes or fetched_pc == 0xAE0B:
+        # Handle KIL opcodes (halt processor)
+        if opcode in self.kil_opcodes:
             if self.jam_reported_at != fetched_pc:
-                self._dump_jam_context(fetched_pc, opcode)
+                print(f"CPU JAM: KIL opcode 0x{opcode:02X} at PC=0x{fetched_pc:04X}")
                 self.jam_reported_at = fetched_pc
-
-    # (Legacy fields removed in new latency model)
 
         # Get base cycle count from lookup table for hardware accuracy
         base_cycles = self.cycle_lookup[opcode]
@@ -925,39 +911,14 @@ class CPU:
 
         instruction, addressing_mode, length, _ = self.instructions[opcode]
 
-        # Debug: Log instruction execution to see if we're getting stuck
-        if (
-            self.total_cycles % 10000 == 0
-            or instruction in ["RTI", "LDA", "STA", "JMP", "BNE", "BEQ", "BCC", "BCS"]
-            or old_pc == 0x810E  # level-load LDA abs,X
-            or old_pc == 0x8111  # BEQ following 0x810E
-            or old_pc == 0x8136  # BNE in level-load loop
-            or old_pc == 0x8FA1  # LDA abs,X in copy loop
-            or old_pc == 0x8FB9  # BCC in copy loop
-            or old_pc == 0x8150
-            or old_pc == 0x8153
-            or old_pc == 0x8227
-            or old_pc == 0x822E
-        ):
-            debug_print(
-                f"CPU: Executing {instruction} at PC=0x{old_pc:04X}, opcode=0x{opcode:02X}, cycles={self.total_cycles}, length={length}"
-            )
-
-        # Fetch operand (following RustyNES fetch_operand pattern)
+        # Fetch operand
         pc_before_address = self.PC
         address, page_crossing_penalty = self._get_address_with_page_crossing_info(
             addressing_mode, length - 1, instruction
         )
         pc_after_address = self.PC
 
-        # Debug: Check if PC is advancing properly
-        if old_pc in (0x810E, 0x8111, 0x8150, 0x8153, 0x8227, 0x822E):
-            address_str = f"{address:04X}" if address is not None else "0000"
-            debug_print(
-                f"CPU: PC progression: {old_pc:04X} -> {pc_before_address:04X} -> {pc_after_address:04X}, addressing_mode={addressing_mode}, length={length}, address=0x{address_str}"
-            )
-
-        # Execute instruction (following RustyNES instruction dispatch pattern)
+        # Execute instruction
         extra_cycles = 0
         if opcode in self.instruction_dispatch:
             extra_cycles = self.instruction_dispatch[opcode](address, addressing_mode)
@@ -971,10 +932,6 @@ class CPU:
         if extra_cycles is None:
             extra_cycles = 0
 
-        # Debug: Check if PC changed after instruction execution
-        if old_pc == 0x8150 or old_pc == 0x8153:
-            debug_print(f"CPU: PC after instruction execution: {self.PC:04X}")
-
         # Handle branch instructions with proper cycle calculation
         branch_cycles = 0
         if instruction in ["BPL", "BMI", "BVC", "BVS", "BCC", "BCS", "BNE", "BEQ"]:
@@ -986,138 +943,29 @@ class CPU:
         )
 
         # END-OF-INSTRUCTION latency processing (single, collapsible event)
-        latency_applied_now = False
         if self.interrupt_latency_remaining > 0:
             if not self.interrupt_latency_armed:
                 # Arm after the modifying instruction completes; do not decrement yet
                 self.interrupt_latency_armed = True
-                debug_print(f"CPU: Latency armed after modifier at PC=0x{old_pc:04X}; waiting for 1 full intervening instruction")
             else:
                 # Count one full instruction executed post-modification
                 self.interrupt_latency_remaining -= 1
-                debug_print(f"CPU: Latency countdown -> {self.interrupt_latency_remaining} after PC=0x{old_pc:04X}")
                 if self.interrupt_latency_remaining == 0:
                     self.interrupt_inhibit = self.pending_interrupt_inhibit
-                    debug_print(f"CPU: Interrupt inhibit latency applied: effective now {self.interrupt_inhibit} (visible I={self.I}) after PC=0x{old_pc:04X}")
-                    latency_applied_now = True
-
-
-
-        # Record trace after executing instruction
-        try:
-            self._record_trace(old_pc, opcode, instruction, addressing_mode, address, self.PC)
-        except Exception as e:
-            debug_print(f"CPU TRACE ERROR: {e}")
 
         return total_cycles
 
-    def execute_instruction(self):
-        """Legacy method - no longer used with integrated execution model"""
-        debug_print("Executing LEGACY instruction...")
-        # This method is kept for compatibility but is no longer called
-        pass
-
-    def _record_trace(self, pc, opcode, instruction, addressing_mode, address, next_pc):
-        """Record a compact trace entry for debugging"""
-        entry = {
-            'cycles': self.total_cycles,
-            'pc': pc,
-            'opcode': opcode,
-            'mnemonic': instruction,
-            'addr_mode': addressing_mode,
-            'operand_addr': address,
-            'next_pc': next_pc,
-            'A': self.A,
-            'X': self.X,
-            'Y': self.Y,
-            'S': self.S,
-            'P': self.get_status_byte(),
-        }
-        self.trace_history.append(entry)
-        if len(self.trace_history) > self.max_trace_history:
-            self.trace_history.pop(0)
-
-    def _dump_jam_context(self, pc, opcode):
-        """Dump detailed context when a jam/KIL or suspicious PC is hit"""
-        try:
-            print("=== CPU JAM CONTEXT ===")
-            print(f"At PC=0x{pc:04X}, opcode=0x{opcode:02X}")
-            print(
-                f"A=0x{self.A:02X} X=0x{self.X:02X} Y=0x{self.Y:02X} S=0x{self.S:02X} P=0x{self.get_status_byte():02X} (N={self.N} V={self.V} D={self.D} I={self.I} Z={self.Z} C={self.C})"
-            )
-            # Show a small hex window around PC using raw PRG mapping if available
-            window = []
-            start = (pc - 8) & 0xFFFF
-            for offs in range(0, 17):
-                addr = (start + offs) & 0xFFFF
-                try:
-                    byte = self.memory.read(addr)
-                except Exception:
-                    byte = 0
-                window.append((addr, byte))
-            print(
-                "Nearby bytes (via memory.read): "
-                + " ".join([f"{a:04X}:{b:02X}" for a, b in window])
-            )
-
-            # Verify PRG ROM mapping
-            prg_info = ""
-            rom_byte = None
-            prg_off = None
-            cart = getattr(self.memory, 'cartridge', None)
-            if cart and pc >= 0x8000:
-                try:
-                    if cart.mapper == 0:
-                        if cart.prg_rom_size == 1:
-                            prg_off = (pc - 0x8000) & 0x3FFF
-                        else:
-                            prg_off = pc - 0x8000
-                    else:
-                        prg_off = (pc - 0x8000) % len(cart.prg_rom) if len(cart.prg_rom) > 0 else None
-                    if prg_off is not None and 0 <= prg_off < len(cart.prg_rom):
-                        rom_byte = cart.prg_rom[prg_off]
-                    prg_info = (
-                        f"Mapper={cart.mapper}, PRG_ROM_SIZE={len(cart.prg_rom)} bytes, prg_off=0x{(prg_off or 0):04X}, ROM[off]=0x{(rom_byte or 0):02X}"
-                    )
-                except Exception as e:
-                    prg_info = f"PRG mapping check failed: {e}"
-            if prg_info:
-                print("PRG mapping: " + prg_info)
-                if rom_byte is not None:
-                    match = "MATCH" if rom_byte == opcode else "MISMATCH"
-                    print(f"Fetch vs ROM byte: 0x{opcode:02X} vs 0x{rom_byte:02X} => {match}")
-
-            # Dump a short backtrace of previous instructions
-            if self.trace_history:
-                print("Last instructions:")
-                for e in self.trace_history[-10:]:
-                    addr_str = f"0x{(e['operand_addr'] if e['operand_addr'] is not None else 0):04X}"
-                    print(
-                        f"  cyc={e['cycles']:>8} PC=0x{e['pc']:04X} OP=0x{e['opcode']:02X} {e['mnemonic']} {e['addr_mode']} -> next=0x{e['next_pc']:04X} A={e['A']:02X} X={e['X']:02X} Y={e['Y']:02X} S={e['S']:02X} P={e['P']:02X} addr={addr_str}"
-                    )
-            print("=== END JAM CONTEXT ===")
-        except Exception as e:
-            print(f"ERROR dumping jam context: {e}")
-
     def _handle_interrupt(self):
         """Handle pending interrupt"""
-        old_PC = self.PC
-
         if self.interrupt_pending == "NMI":
             vector_addr = 0xFFFA
-            debug_print(f"CPU: Handling NMI interrupt, vector=0xFFFA")
-            # Mark NMI active until RTI
             self.in_nmi = True
             self.current_interrupt_type = "NMI"
-            debug_print(f"CPU: NMI enter (set in_nmi=True)")
         elif self.interrupt_pending == "IRQ":
             vector_addr = 0xFFFE
-            debug_print(f"CPU: Handling IRQ interrupt, vector=0xFFFE")
         elif self.interrupt_pending == "RST":
             vector_addr = 0xFFFC
-            debug_print(f"CPU: Handling RESET interrupt, vector=0xFFFC")
         else:
-            debug_print(f"CPU: No valid interrupt to handle: {self.interrupt_pending}")
             return
 
         # Push PC and status register to stack in correct 6502 order
@@ -1140,10 +988,6 @@ class CPU:
         high = self.memory.read(vector_addr + 1)
         self.PC = (high << 8) | low
 
-        debug_print(
-            f"CPU: Interrupt handler jumping to 0x{self.PC:04X}, old PC=0x{old_PC:04X}"
-        )
-
         # Clear the pending interrupt
         self.interrupt_pending = None
 
@@ -1160,13 +1004,6 @@ class CPU:
             "BNE": self.Z == 0,
             "BEQ": self.Z == 1,
         }
-
-        # Targeted trace for branch decisions in suspected loops
-        if self.current_instruction_pc in (0x8111, 0x8136, 0x8FB9, 0x812E, 0x80F9):
-            taken = conditions.get(instruction, False)
-            debug_print(
-                f"CPU: {instruction} at PC=0x{self.current_instruction_pc:04X} -> target=0x{address:04X}, taken={taken}, flags: Z={self.Z} N={self.N} C={self.C} V={self.V}"
-            )
 
         extra_cycles = 0
         if conditions.get(instruction, False):
@@ -1365,22 +1202,12 @@ class CPU:
 
     def trigger_interrupt(self, interrupt_type):
         """Trigger an interrupt (NMI, IRQ, RST)"""
-        debug_print(
-            f"CPU: Interrupt triggered: {interrupt_type}, PC=0x{self.PC:04X}, prev_interrupt={self.interrupt_pending}"
-        )
-
         # NMI takes precedence over IRQ
         if interrupt_type == "NMI":
-            # NMI always takes precedence regardless of previous interrupt
             self.interrupt_pending = "NMI"
-            # Ensure it will be handled at the next instruction boundary
             self.interrupt_state = 0
-            # Do not modify the I flag here; precedence is handled when servicing
         elif interrupt_type == "IRQ" and self.interrupt_pending != "NMI":
-            # Latch IRQ. It will only be serviced when interrupts are enabled (after CLI/PLP latency)
             self.interrupt_pending = "IRQ"
-            if self.interrupt_inhibit == 1:
-                debug_print(f"CPU: IRQ pending but masked (I={self.I})")
 
     def add_dma_cycles(self, cycles):
         """Add DMA cycles that will delay CPU execution"""
@@ -1497,28 +1324,11 @@ class CPU:
             target = ((high << 8) | low) + self.Y
             return target & 0xFFFF
 
-    # Instruction implementations - Updated for hardware accuracy
+    # Instruction implementations
     def execute_lda(self, operand, addressing_mode):
-        # Optimized: single read operation
         value = self.memory.read(operand)
         self.A = value
         self.set_zero_negative(self.A)
-
-        # Targeted trace for suspected freeze loops
-        if self.current_instruction_pc in (0x810E, 0x8FA1, 0x80F6, 0x811F, 0x8126, 0x8182, 0x818D, 0x80F0):
-            debug_print(
-                f"CPU: LDA trace at PC=0x{self.current_instruction_pc:04X}: mode={addressing_mode}, addr=0x{operand:04X}, val=0x{value:02X}, X=0x{self.X:02X}, Y=0x{self.Y:02X}"
-            )
-
-        # Debug: Log LDA reads from specific addresses that might be causing loops
-        if operand == 0x2002 or operand == 0x2000 or operand == 0x2001:
-            debug_print(
-                f"CPU: LDA from PPU register 0x{operand:04X} = 0x{value:02X}, A=0x{self.A:02X}"
-            )
-        elif self.total_cycles % 1000 == 0:
-            debug_print(
-                f"CPU: LDA from 0x{operand:04X} = 0x{value:02X}, A=0x{self.A:02X}"
-            )
 
     def execute_ldx(self, operand, addressing_mode):
         value = self.memory.read(operand)
@@ -1530,22 +1340,12 @@ class CPU:
         self.set_zero_negative(self.Y)
 
     def execute_sta(self, operand, addressing_mode):
-        # CPU-side trace for writes into level buffer region
-        if 0x0500 <= (operand & 0xFFFF) <= 0x07FF:
-            debug_print(
-                f"CPU: STA trace to RAM[${operand & 0xFFFF:04X}] <= A=0x{self.A:02X} at PC=0x{self.current_instruction_pc:04X} (in_nmi={self.in_nmi})"
-            )
         self.memory.write(operand, self.A)
 
     def execute_stx(self, operand, addressing_mode):
         self.memory.write(operand, self.X)
 
     def execute_sty(self, operand, addressing_mode):
-        # CPU-side trace for writes into level buffer region
-        if 0x0500 <= (operand & 0xFFFF) <= 0x07FF:
-            debug_print(
-                f"CPU: STY trace to RAM[${operand & 0xFFFF:04X}] <= Y=0x{self.Y:02X} at PC=0x{self.current_instruction_pc:04X} (in_nmi={self.in_nmi})"
-            )
         self.memory.write(operand, self.Y)
 
     def execute_tax(self, operand, addressing_mode):
@@ -1603,9 +1403,8 @@ class CPU:
                 self.pending_interrupt_inhibit = self.I
                 self.interrupt_latency_remaining = 1
                 self.interrupt_latency_armed = False
-            debug_print(f"CPU: PLP changed I -> {self.I}, latency scheduled (after one full intervening instruction)")
         else:
-            self.I = new_i  # No change -> no latency scheduling
+            self.I = new_i
 
     def execute_adc(self, operand, addressing_mode):
         # Optimized: single read operation
@@ -1636,19 +1435,9 @@ class CPU:
         self.set_zero_negative(self.A)
 
     def execute_and(self, operand, addressing_mode):
-        # Read value from memory (operand is always an address)
         value = self.memory.read(operand)
-        
-        # Debug: Show what we're ANDing for specific addresses
-        if operand == 0x8154:
-            debug_print(f"CPU: AND #$40 (testing sprite 0 hit): A=0x{self.A:02X} & 0x{value:02X} -> 0x{self.A & value:02X}")
-        
         self.A = self.A & value
         self.set_zero_negative(self.A)
-        
-        # Debug: Show result flags
-        if operand == 0x8154:
-            debug_print(f"CPU: AND result: A=0x{self.A:02X}, Z={self.Z}, N={self.N}")
 
     def execute_eor(self, operand, addressing_mode):
         # Optimized: single read operation
@@ -1823,9 +1612,6 @@ class CPU:
             self.PC = operand
 
     def execute_jmp(self, operand, addressing_mode):
-        # Debug JMP loops
-        if operand == 0x8057:
-            debug_print(f"CPU: JMP infinite loop detected at PC=0x{operand:04X}")
         self.PC = operand
 
     def execute_jsr(self, operand, addressing_mode):
@@ -1846,7 +1632,6 @@ class CPU:
         # Push PC and status to stack
         self.push_stack((self.PC >> 8) & 0xFF)
         self.push_stack(self.PC & 0xFF)
-        debug_print(f"CPU: BRK executed (NMI pending={self.interrupt_pending == 'NMI'})")
         
         # If an NMI is pending at this exact moment, NMI takes precedence over BRK.
         # This matches hardware behavior verified by cpu_interrupts_v2 2-nmi_and_brk.
@@ -1896,7 +1681,6 @@ class CPU:
 
         # If we were in NMI, mark as exited now
         if self.in_nmi:
-            debug_print("CPU: NMI exit (set in_nmi=False)")
             self.in_nmi = False
             self.current_interrupt_type = None
 
@@ -1907,30 +1691,20 @@ class CPU:
         self.C = 1
 
     def execute_cli(self, operand, addressing_mode):
-        """Clear Interrupt flag with one-instruction latency on recognition.
-        Visible I clears now; recognition waits one FULL intervening instruction boundary.
-        """
+        """Clear Interrupt flag with one-instruction latency."""
         self.I = 0
-        self.last_cli_cycle = self.total_cycles
-        self.last_cli_pc = self.current_instruction_pc
         if self.interrupt_inhibit != self.I:
             self.pending_interrupt_inhibit = self.I
             self.interrupt_latency_remaining = 1
             self.interrupt_latency_armed = False
-        debug_print(f"CPU: CLI executed at PC=0x{self.current_instruction_pc:04X}, I={self.I}, latency scheduled (after one full intervening instruction)")
 
     def execute_sei(self, operand, addressing_mode):
-        """Set Interrupt flag with one-instruction latency on recognition.
-        Visible I sets now; recognition waits one FULL intervening instruction boundary.
-        """
+        """Set Interrupt flag with one-instruction latency."""
         self.I = 1
-        self.last_sei_cycle = self.total_cycles
-        self.last_sei_pc = self.current_instruction_pc
         if self.interrupt_inhibit != self.I:
             self.pending_interrupt_inhibit = self.I
             self.interrupt_latency_remaining = 1
             self.interrupt_latency_armed = False
-        debug_print(f"CPU: SEI executed at PC=0x{self.current_instruction_pc:04X}, I={self.I}, latency scheduled (after one full intervening instruction)")
 
     def execute_clv(self, operand, addressing_mode):
         self.V = 0
@@ -2085,44 +1859,27 @@ class CPU:
         self.S = self.A & self.X
         high_byte = (operand >> 8) & 0xFF
         value = self.A & self.X & (high_byte + 1)
-        if 0x0500 <= (operand & 0xFFFF) <= 0x07FF:
-            debug_print(
-                f"CPU: TAS trace to RAM[${operand & 0xFFFF:04X}] <= 0x{value:02X} at PC=0x{self.current_instruction_pc:04X} (in_nmi={self.in_nmi})"
-            )
         self.memory.write(operand & 0xFFFF, value)
 
     def execute_kil(self, operand, addressing_mode):
         """KIL - Kill/Jam the processor (halt)."""
         # Decrement PC so we stay on this opcode; effectively halts execution.
         self.PC = (self.PC - 1) & 0xFFFF
-        # Dump context once for diagnosis
         if self.jam_reported_at != self.PC:
-            self._dump_jam_context(self.PC, 0x02)
+            print(f"KIL instruction executed at PC: 0x{self.PC:04X} - processor halted")
             self.jam_reported_at = self.PC
-        print(f"KIL instruction executed at PC: 0x{self.PC:04X} - processor halted")
-        # Return 0 extra cycles; step() will continue counting down and we will refetch KIL
         return 0
 
     def execute_shx(self, operand, addressing_mode):
-        """SHX (AHX) - Store X AND (high byte of effective addr + 1) at effective address"""
+        """SHX - Store X AND (high byte of effective addr + 1) at effective address"""
         high_byte = (operand >> 8) & 0xFF
         value = self.X & (high_byte + 1)
-        # Instrument writes into level buffer region
-        if 0x0500 <= (operand & 0xFFFF) <= 0x07FF:
-            debug_print(
-                f"CPU: SHX trace to RAM[${operand & 0xFFFF:04X}] <= 0x{value:02X} at PC=0x{self.current_instruction_pc:04X} (in_nmi={self.in_nmi})"
-            )
         self.memory.write(operand & 0xFFFF, value)
 
     def execute_sha(self, operand, addressing_mode):
-        """SHA (AHX) - Store A AND X AND (high byte of effective addr + 1) at effective address"""
+        """SHA - Store A AND X AND (high byte of effective addr + 1) at effective address"""
         high_byte = (operand >> 8) & 0xFF
         value = self.A & self.X & (high_byte + 1)
-        # Instrument writes into level buffer region
-        if 0x0500 <= (operand & 0xFFFF) <= 0x07FF:
-            debug_print(
-                f"CPU: SHA trace to RAM[${operand & 0xFFFF:04X}] <= 0x{value:02X} at PC=0x{self.current_instruction_pc:04X} (in_nmi={self.in_nmi})"
-            )
         self.memory.write(operand & 0xFFFF, value)
 
     def execute_alr(self, operand, addressing_mode):

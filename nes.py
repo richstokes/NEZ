@@ -7,7 +7,6 @@ from cpu import CPU
 from ppu import PPU
 from apu import APU
 from memory import Memory, Cartridge
-from utils import debug_print
 
 
 class NES:
@@ -48,7 +47,7 @@ class NES:
         try:
             cart = Cartridge(rom_path)
         except Exception as e:
-            debug_print(f"NES: Failed to load ROM '{rom_path}': {e}")
+            print(f"Failed to load ROM: {e}")
             return False
 
         # Attach cartridge
@@ -67,7 +66,6 @@ class NES:
 
         # Reset CPU/PPU to power-on state using vectors from cartridge PRG
         self.reset()
-        debug_print(f"NES: ROM '{rom_path}' loaded (mapper={cart.mapper}, region={self.region})")
         return True
 
     def reset(self):
@@ -96,7 +94,6 @@ class NES:
                 self.apu.reset()
             except Exception:
                 pass
-        debug_print(f"NES: Reset complete, PC=0x{pc:04X}, region={self.region}")
 
     def step(self):
         """Execute one NES step (one CPU cycle + corresponding PPU/APU cycles)"""
@@ -156,10 +153,6 @@ class NES:
             if self.ppu.scanline == last_scanline and self.ppu.cycle == last_cycle:
                 oscillation_counter += 1
                 if oscillation_counter > 100:
-                    debug_print(
-                        f"DEBUG: PPU OSCILLATION DETECTED at scanline={self.ppu.scanline}, cycle={self.ppu.cycle}, frame={self.ppu.frame}"
-                    )
-                    # Force the PPU to advance
                     self.ppu.cycle += 1
                     oscillation_counter = 0
             else:
@@ -167,13 +160,8 @@ class NES:
                 last_scanline = self.ppu.scanline
                 last_cycle = self.ppu.cycle
 
-            if (
-                step_count > 200000
-            ):  # Safety break to prevent infinite loops; allow plenty of headroom
-                debug_print(
-                    f"DEBUG: step_frame safety break at {step_count} steps, PPU at scanline={self.ppu.scanline}, cycle={self.ppu.cycle}, mask={self.ppu.mask}, render={self.ppu.render}, frame={self.ppu.frame}"
-                )
-                # Force render flag to exit loop if we hit the safety limit
+            # Safety break to prevent infinite loops
+            if step_count > 200000:
                 self.ppu.render = True
                 break
 
@@ -183,62 +171,23 @@ class NES:
 
     def handle_nmi(self):
         """Handle Non-Maskable Interrupt"""
-        debug_print(f"NES: handle_nmi() called, CPU PC=0x{self.cpu.PC:04X}")
-
-        # Do not clear pending IRQs here. NMI takes precedence naturally at the CPU,
-        # and any latched IRQ should remain pending to be serviced after NMI if allowed.
-
-        # Trigger NMI through the CPU's new interrupt system
         if hasattr(self.cpu, "trigger_interrupt"):
-            debug_print(
-                f"NES: Calling CPU.trigger_interrupt('NMI'), CPU PC=0x{self.cpu.PC:04X}"
-            )
             self.cpu.trigger_interrupt("NMI")
         else:
             # Fallback for old CPU implementation
-            debug_print(f"NES: CPU doesn't have trigger_interrupt, using fallback")
-            # Push PC and status to stack
             self.cpu.push_stack((self.cpu.PC >> 8) & 0xFF)
             self.cpu.push_stack(self.cpu.PC & 0xFF)
-
-            # Mask B flag off when pushing status during interrupt
-            status = self.cpu.get_status_byte() & 0xEF  # Clear B flag (bit 4)
+            status = self.cpu.get_status_byte() & 0xEF  # Clear B flag
             self.cpu.push_stack(status)
-
-            # Set interrupt disable flag
             self.cpu.I = 1
-
-            # Jump to NMI vector
             low = self.memory.read(0xFFFA)
             high = self.memory.read(0xFFFB)
-            new_pc = (high << 8) | low
-            debug_print(
-                f"NES: NMI handling - jumping to 0x{new_pc:04X}, prev PC=0x{self.cpu.PC:04X}"
-            )
-            self.cpu.PC = new_pc
+            self.cpu.PC = (high << 8) | low
 
     def trigger_nmi(self):
-        """Trigger NMI immediately - called directly from PPU"""
-        debug_print(f"NES: trigger_nmi() called, setting nmi_pending=True")
-        debug_print(
-            f"NES: NMI triggered at frame {self.ppu.frame}, scanline {self.ppu.scanline}, CPU PC=0x{self.cpu.PC:04X}"
-        )
-
-        # Mark NMI as pending - will be handled in next CPU step
+        """Trigger NMI - called directly from PPU"""
         self.nmi_pending = True
-        debug_print(f"NES: NMI pending set to True, will be handled in next step")
-
-
-        # The delay is important for accurate timing
-        # NMI is detected at the end of the current instruction
-        # 2 cycles gives enough time for the current instruction to finish
         self.nmi_delay = 2
-
-        # Inform user about NMI trigger during early frames
-        if self.ppu.frame <= 35:
-            debug_print(
-                f"NES: NMI triggered at frame {self.ppu.frame}, scanline {self.ppu.scanline}, CPU PC=0x{self.cpu.PC:04X}"
-            )
 
     def set_controller_input(self, controller, buttons):
         """Set controller input

@@ -70,18 +70,7 @@ class Memory:
         elif addr < 0x4000:
             # PPU registers (mirrored every 8 bytes)
             ppu_addr = 0x2000 + (addr & 7)
-            if ppu_addr == 0x2002 and self.ppu and self.ppu.frame < 10:
-                self.ppu_status_poll_count += 1
-                if self.ppu_status_poll_count in (1, 5, 20, 100, 500, 2000):
-                    try:
-                        from utils import debug_print
-                        debug_print(
-                            f"CPU: polled $2002 {self.ppu_status_poll_count} times frame={self.ppu.frame} scanline={self.ppu.scanline} cycle={self.ppu.cycle}"
-                        )
-                    except Exception:
-                        pass
             self.bus = self.ppu.read_register(ppu_addr)
-            return self.bus
             return self.bus
         elif addr == 0x4015:
             # APU status
@@ -103,16 +92,7 @@ class Memory:
                 self.controller1_index += 1
 
             # Preserve upper bits from open bus (bit 7-5) and mix in result
-            self.bus = (
-                (self.bus & 0xE0) | (result & 0x01) | 0x40
-            )  # Bit 6 often set on real hardware
-            # Debug controller reads early frames (first 9 reads)
-            try:
-                from utils import debug_print
-                if self.ppu and self.ppu.frame < 120 and self.controller1_index <= 9:
-                    debug_print(f"INPUT: READ $4016 -> {result} (index={self.controller1_index-1}) frame={self.ppu.frame}")
-            except Exception:
-                pass
+            self.bus = (self.bus & 0xE0) | (result & 0x01) | 0x40
             return self.bus
         elif addr == 0x4017:
             # APU Frame Counter (write-only) / Controller 2
@@ -139,67 +119,28 @@ class Memory:
 
         if addr < 0x2000:
             # Internal RAM (mirrored every 2KB)
-            real_addr = addr & 0x7FF
-            self.ram[real_addr] = value
-
-            # Targeted debug: log writes into $0700-$07FF to see level/update buffers
-            if 0x0700 <= real_addr <= 0x07FF and self.low_ram_log_count < 200:
-                try:
-                    pc = self.cpu.PC if self.cpu else 0
-                except Exception:
-                    pc = 0
-                from utils import debug_print
-                debug_print(
-                    f"MEM: RAM write @${real_addr:04X}=0x{value:02X} by PC=0x{pc:04X}"
-                )
-                self.low_ram_log_count += 1
+            self.ram[addr & 0x7FF] = value
         elif addr < 0x4000:
             # PPU registers (mirrored every 8 bytes)
             ppu_addr = 0x2000 + (addr & 7)
             self.ppu.write_register(ppu_addr, value)
         elif addr == 0x4014:
-            # OAM DMA - critical for sprite data transfer
+            # OAM DMA - sprite data transfer
             start_addr = value * 0x100
-            # Debug OAM DMA initiation
-            try:
-                pc = self.cpu.PC if self.cpu else 0
-            except Exception:
-                pc = 0
-            from utils import debug_print
-            debug_print(
-                f"MEM: OAM DMA start from ${start_addr:04X} (value=0x{value:02X}) triggered by PC=0x{pc:04X}"
-            )
-
-            # Try to use direct memory access for speed
             ptr_data, offset = self.get_ptr(start_addr)
             if ptr_data is not None and offset + 256 <= len(ptr_data):
                 # Fast path - direct memory copy
                 for i in range(256):
                     self.ppu.oam[i] = ptr_data[offset + i]
-                # Update bus with last byte transferred
                 self.bus = ptr_data[offset + 255]
             else:
                 # Slow path - use memory reads (handles bank switching)
                 for i in range(256):
                     self.ppu.oam[i] = self.read(start_addr + i)
 
-            # DMA takes 513 CPU cycles + 1 if on odd cycle (hardware-accurate)
+            # DMA takes 513 CPU cycles (hardware-accurate)
             if hasattr(self.cpu, "add_dma_cycles"):
                 self.cpu.add_dma_cycles(513)
-
-            # Log first few OAM bytes after DMA to verify sprite 0 data
-            if self.ppu and self.ppu.frame < 10:
-                first = ' '.join(f"{b:02X}" for b in self.ppu.oam[:8])
-                debug_print(
-                    f"PPU: OAM[0..7] after DMA: {first} (frame={self.ppu.frame})"
-                )
-            # Extended OAM dump (first 32 bytes) until sprite0 tile becomes something other than 0xFF
-            if self.ppu and (not hasattr(self.ppu, '_sprite0_tile_changed')):
-                sprite0_tile = self.ppu.oam[1]
-                first32 = ' '.join(f"{b:02X}" for b in self.ppu.oam[:32])
-                debug_print(f"PPU: OAM[0..31] snapshot tile0=0x{sprite0_tile:02X}: {first32}")
-                if sprite0_tile != 0xFF:
-                    self.ppu._sprite0_tile_changed = True
         elif addr == 0x4016:
             # Controller strobe register - controls both controllers
             old_strobe = self.strobe
@@ -210,14 +151,6 @@ class Memory:
                 self.controller2_shift = self.controller2
                 self.controller1_index = 0
                 self.controller2_index = 0
-
-            # Debug controller writes early and periodically
-            try:
-                from utils import debug_print
-                if (self.ppu and self.ppu.frame < 120) and (old_strobe != self.strobe or self.ppu.frame % 30 == 0):
-                    debug_print(f"INPUT: WRITE $4016=0x{value:02X} (strobe {old_strobe}->{self.strobe}) frame={self.ppu.frame}")
-            except Exception:
-                pass
 
             # Update bus with mixed old/new values as per hardware
             self.bus = (old_bus & 0xE0) | (value & 0x1F)

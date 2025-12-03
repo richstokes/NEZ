@@ -617,12 +617,8 @@ class FrameSequencer:
                     self.clock_quarter_frame(apu)
                     self.clock_half_frame(apu)
                     if not self.irq_inhibit:
-                        # Only trigger IRQ if not already flagged (prevent IRQ spam)
                         if not self.irq_flag:
                             self.irq_flag = True
-                            from utils import debug_print
-                            debug_print(f"APU: Frame IRQ asserted at seq.cycles={self.cycles}, cpu_cycles={apu.nes.cpu_cycles}")
-                            # Trigger CPU IRQ
                             if hasattr(apu.nes, "cpu") and hasattr(
                                 apu.nes.cpu, "trigger_interrupt"
                             ):
@@ -861,20 +857,8 @@ class APU:
             # Queue to SDL2 audio device
             result = sdl2.SDL_QueueAudio(self.audio_stream, audio_data, len(audio_data))
             if result != 0:
-                error = sdl2.SDL_GetError().decode("utf-8")
-                print(f"APU: Error queueing audio: {error}")
-                # Try to reinitialize audio if there was an error
                 if hasattr(self, "init_audio_stream"):
                     self.init_audio_stream(self.audio_stream)
-
-            # Debug output for audio (only if values are non-zero)
-            if len(self.audio_buffer) > 0:
-                min_val = min(self.audio_buffer)
-                max_val = max(self.audio_buffer)
-                if min_val != 0 or max_val != 0:
-                    print(
-                        f"APU: Queued {len(self.audio_buffer)} audio samples, range: {min_val} to {max_val}"
-                    )
 
         except Exception as e:
             print(f"APU: Error in _queue_audio: {e}")
@@ -906,9 +890,6 @@ class APU:
             status |= 0x80
 
         # Clear IRQ flags on read as per hardware behavior
-        if self.frame_sequencer.irq_flag:
-            from utils import debug_print
-            debug_print(f"APU: $4015 read, clearing frame IRQ flag at cpu_cycles={self.nes.cpu_cycles}")
         self.frame_sequencer.irq_flag = False
         # DMC IRQ flag also clears on $4015 read
         self.dmc.irq_flag = False
@@ -1031,8 +1012,6 @@ class APU:
             self.dmc.sample_length = (value << 4) | 1
 
         elif addr == 0x4015:  # APU status/enable
-            from utils import debug_print
-            debug_print(f"APU: $4015 write value=0x{value:02X} at cpu_cycles={self.nes.cpu_cycles}")
             self.pulse1.enabled = bool(value & 0x01)
             self.pulse2.enabled = bool(value & 0x02)
             self.triangle.enabled = bool(value & 0x04)
@@ -1059,13 +1038,9 @@ class APU:
                 self.dmc.irq_flag = False
 
         elif addr == 0x4017:  # Frame sequencer
-            from utils import debug_print
-            debug_print(f"APU: $4017 write value=0x{value:02X} at cpu_cycles={self.nes.cpu_cycles}")
             self.frame_sequencer.mode = (value >> 7) & 1
             self.frame_sequencer.irq_inhibit = bool(value & 0x40)
             if self.frame_sequencer.irq_inhibit:
-                if self.frame_sequencer.irq_flag:
-                    debug_print(f"APU: $4017 irq_inhibit=1, clearing frame IRQ flag at cpu_cycles={self.nes.cpu_cycles}")
                 self.frame_sequencer.irq_flag = False
 
             # Reset sequencer with immediate frame execution (reference implementation)
