@@ -353,10 +353,19 @@ class NEZEmulator:
             # Update controller state to NES before frame
             self.nes.set_controller_input(1, self.controller_state)
 
-            # Run emulator for one frame - optimized
-            self.nes.step_frame()
+            # Run emulator for one frame - with periodic event handling for responsiveness
+            self.nes.ppu.render = False
+            step_count = 0
+            while not self.nes.ppu.render and step_count < 200000:
+                self.nes.step()
+                step_count += 1
+                # Handle events every ~1000 steps to keep UI responsive
+                if step_count % 5000 == 0:
+                    self.handle_events()
+                    if not self.running:
+                        break
 
-            # Update display only when necessary
+            # Update display
             self.update_texture()
             self.render()
 
