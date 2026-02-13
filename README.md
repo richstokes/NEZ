@@ -39,17 +39,40 @@ Edit, September 2025: This was a horrible idea. LLMs are creating a mess. Python
 - The lower models often like to duplicate functions. Again it seems that they are not reviewing/considering the full context of the codebase (even when asked). Often times I've had to tell it to go and consolidate duplicate/similar methods. Similarly they have a tendency to create placeholder or stub methods.
 - As a result, using non-premium models is basically pointless / will result in a mess and set you back.
 
-## Installation
+## Prerequisites
 
-Using pipenv:
+- **Python 3.13+**
+- **pipenv** — install with `pip install pipenv` if you don't have it
+
+The Pipfile pulls in [PySDL2](https://pypi.org/project/PySDL2/) (plus the bundled SDL2 binary), [Pillow](https://pypi.org/project/Pillow/) for screenshots, [Cython](https://cython.org/) for the accelerated PPU, and a few build utilities.
+
+## Installation
 
 ```bash
 pipenv install
 ```
 
+This creates a virtualenv and installs all runtime dependencies.
+
+### Building the Cython PPU (recommended)
+
+The PPU (graphics engine) has an optional Cython-accelerated version that is **essential for playable performance**. Without it the emulator falls back to the pure-Python PPU, which is significantly slower.
+
+```bash
+pipenv run python setup.py build_ext --inplace
+```
+
+This compiles `ppu.pyx` into a native C extension (`.so` on macOS/Linux, `.pyd` on Windows). You only need to rebuild after modifying `ppu.pyx`.
+
 ## Usage
 
 Run the emulator with a ROM file:
+
+```bash
+pipenv run python main.py <rom_file>
+```
+
+For example:
 
 ```bash
 pipenv run python main.py mario.nes
@@ -64,11 +87,9 @@ pipenv run python main.py mario.nes --headless
 pipenv run python main.py mario.nes --headless --duration 120 --screenshot output.png
 ```
 
-| Flag | Description | Default |
-|------|-------------|---------|
-| `--headless` | Run without a window (no SDL). Prints progress and saves a screenshot on exit. | off |
-| `--duration` | How many seconds to run in headless mode. | `60` |
-| `--screenshot` | File path for the headless-mode screenshot. | `headless_screenshot.png` |
+- `--headless` — Run without a window (no SDL). Prints progress and saves a screenshot on exit.
+- `--duration <seconds>` — How many seconds to run in headless mode (default: `60`).
+- `--screenshot <path>` — File path for the headless-mode screenshot (default: `headless_screenshot.png`).
 
 ### Debug Headless Runner
 
@@ -78,42 +99,34 @@ A separate script (`headless_run.py`) is available for debug-oriented headless r
 pipenv run python headless_run.py mario.nes --frames 120 --out full.log --hits spr0.log
 ```
 
-| Flag | Description | Default |
-|------|-------------|---------|
-| `--frames` | Number of frames to run. | `90` |
-| `--out` | Path to write full debug log output. | none |
-| `--hits` | Path to write filtered sprite-0 hit lines. | none |
-| `--continue-after-hit` | Don't stop early when a sprite-0 hit occurs; run the full frame count. | off |
+- `--frames <n>` — Number of frames to run (default: `90`).
+- `--out <path>` — Path to write full debug log output.
+- `--hits <path>` — Path to write filtered sprite-0 hit lines.
+- `--continue-after-hit` — Don't stop early when a sprite-0 hit occurs; run the full frame count.
 
 ### Controls
 
 **Player 1**
 
-| Key | NES Button |
-|-----|------------|
-| Arrow Keys | D-Pad |
-| J | A Button |
-| K | B Button |
-| Right Shift | Select |
-| Enter | Start |
+- Arrow Keys — D-Pad
+- J — A Button
+- K — B Button
+- Right Shift — Select
+- Enter — Start
 
 **Player 2**
 
-| Key | NES Button |
-|-----|------------|
-| WASD | D-Pad |
-| G | A Button |
-| H | B Button |
-| Tab | Select |
-| Space | Start |
+- W/A/S/D — D-Pad
+- G — A Button
+- H — B Button
+- Tab — Select
+- Space — Start
 
 **General**
 
-| Key | Action |
-|-----|--------|
-| R | Reset System |
-| F12 | Take Screenshot |
-| Escape | Quit |
+- R — Reset System
+- F12 — Take Screenshot
+- Escape — Quit
 
 ## Contributions
 

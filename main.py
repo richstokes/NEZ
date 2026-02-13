@@ -502,15 +502,15 @@ def run_headless(rom_path, duration=60, screenshot_path="headless_screenshot.png
     fps = frame_count / elapsed if elapsed > 0 else 0
     print(f"\nDone: {frame_count} frames in {elapsed:.1f}s ({fps:.1f} fps)")
 
-    # Save final screenshot from the PPU screen buffer
+    # Save final screenshot from the PPU screen buffer (ARGB format)
     screen = nes.get_screen()
     img = Image.new("RGBA", (256, 240))
     pixels = []
-    for abgr in screen:
-        a = (abgr >> 24) & 0xFF
-        b = (abgr >> 16) & 0xFF
-        g = (abgr >> 8) & 0xFF
-        r = abgr & 0xFF
+    for argb in screen:
+        a = (argb >> 24) & 0xFF
+        r = (argb >> 16) & 0xFF
+        g = (argb >> 8) & 0xFF
+        b = argb & 0xFF
         pixels.append((r, g, b, a))
     img.putdata(pixels)
     img.save(screenshot_path)

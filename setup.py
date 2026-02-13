@@ -3,6 +3,8 @@ from Cython.Build import cythonize
 
 extensions = [
     Extension("ppu", ["ppu.pyx"]),
+    Extension("apu", ["apu.pyx"]),
+    Extension("cpu", ["cpu.pyx"]),
 ]
 
 setup(
