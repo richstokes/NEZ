@@ -338,7 +338,14 @@ class NEZEmulator:
         """Update SDL texture with NES screen data - optimized"""
         screen = self.nes.get_screen()
         # Fast pack using struct - converts list of ints to bytes directly
-        pixels_bytes = struct.pack(f'{len(screen)}I', *screen)
+        try:
+            pixels_bytes = struct.pack(f'{len(screen)}I', *screen)
+        except struct.error:
+            # Some pixel value is outside unsigned 32-bit range; log and mask
+            bad = [(i, v) for i, v in enumerate(screen) if v < 0 or v > 0xFFFFFFFF]
+            if bad:
+                print(f"Warning: {len(bad)} screen pixel(s) out of uint32 range, e.g. {bad[:3]}")
+            pixels_bytes = struct.pack(f'{len(screen)}I', *(v & 0xFFFFFFFF for v in screen))
         sdl2.SDL_UpdateTexture(self.texture, None, pixels_bytes, 256 * 4)
 
     def render(self):
@@ -561,7 +568,8 @@ def main():
         print("\nEmulator stopped by user")
         return 0
     except Exception as e:
-        print(f"Error: {e}")
+        import traceback
+        traceback.print_exc()
         return 1
 
 
