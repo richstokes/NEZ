@@ -7,6 +7,8 @@ name = "pypi"
 pysdl2-dll = "*"
 pysdl2 = "*"
 pillow = "*"
+cython = "*"
+setuptools = "*"
 
 [dev-packages]
 
