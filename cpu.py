@@ -586,7 +586,14 @@ class CPU:
             0x73: ("RRA", "indirect_indexed", 2, 8),
             # Additional missing unofficial opcodes
             0xEB: ("SBC", "immediate", 2, 2),  # Unofficial SBC
-            0xBB: ("LAX", "absolute_y", 3, 4),  # LAX - Load Accumulator and X
+            0xAB: ("LAX", "immediate", 2, 2),  # LAX immediate (unstable)
+            0xBB: ("LAS", "absolute_y", 3, 4),  # LAS - AND memory with SP -> A,X,SP
+            0x0B: ("ANC", "immediate", 2, 2),  # ANC - AND immediate, copy N to C
+            0x2B: ("ANC", "immediate", 2, 2),  # ANC - AND immediate, copy N to C
+            0x6B: ("ARR", "immediate", 2, 2),  # ARR - AND immediate, then ROR
+            0xCB: ("AXS", "immediate", 2, 2),  # AXS - (A & X) - imm -> X
+            0x9C: ("SHY", "absolute_x", 3, 5),  # SHY - Store Y & (high+1)
+            0x8B: ("XAA", "immediate", 2, 2),  # XAA/ANE - unstable: (A|magic)&X&imm
             0x9B: ("TAS", "absolute_y", 3, 5),  # TAS - Transfer A and X to Stack
             0x02: ("KIL", "implied", 1, 2),  # KIL - Kill (jam/halt processor)
             0x12: ("KIL", "implied", 1, 2),  # KIL
@@ -793,9 +800,84 @@ class CPU:
             0xDC: self.execute_nop,
             0xFC: self.execute_nop,
             # LAX unofficial instructions
-            0xBB: self.execute_lax,
+            0xA7: self.execute_lax,
+            0xB7: self.execute_lax,
+            0xAF: self.execute_lax,
             0xBF: self.execute_lax,
+            0xA3: self.execute_lax,
             0xB3: self.execute_lax,
+            0xAB: self.execute_lax,
+            # LAS
+            0xBB: self.execute_las,
+            # SAX
+            0x87: self.execute_sax,
+            0x97: self.execute_sax,
+            0x8F: self.execute_sax,
+            0x83: self.execute_sax,
+            # DCP
+            0xC7: self.execute_dcp,
+            0xD7: self.execute_dcp,
+            0xCF: self.execute_dcp,
+            0xDF: self.execute_dcp,
+            0xDB: self.execute_dcp,
+            0xC3: self.execute_dcp,
+            0xD3: self.execute_dcp,
+            # ISC
+            0xE7: self.execute_isc,
+            0xF7: self.execute_isc,
+            0xEF: self.execute_isc,
+            0xFF: self.execute_isc,
+            0xFB: self.execute_isc,
+            0xE3: self.execute_isc,
+            0xF3: self.execute_isc,
+            # SLO
+            0x07: self.execute_slo,
+            0x17: self.execute_slo,
+            0x0F: self.execute_slo,
+            0x1F: self.execute_slo,
+            0x1B: self.execute_slo,
+            0x03: self.execute_slo,
+            0x13: self.execute_slo,
+            # RLA
+            0x27: self.execute_rla,
+            0x37: self.execute_rla,
+            0x2F: self.execute_rla,
+            0x3F: self.execute_rla,
+            0x3B: self.execute_rla,
+            0x23: self.execute_rla,
+            0x33: self.execute_rla,
+            # SRE
+            0x47: self.execute_sre,
+            0x57: self.execute_sre,
+            0x4F: self.execute_sre,
+            0x5F: self.execute_sre,
+            0x5B: self.execute_sre,
+            0x43: self.execute_sre,
+            0x53: self.execute_sre,
+            # RRA
+            0x67: self.execute_rra,
+            0x77: self.execute_rra,
+            0x6F: self.execute_rra,
+            0x7F: self.execute_rra,
+            0x7B: self.execute_rra,
+            0x63: self.execute_rra,
+            0x73: self.execute_rra,
+            # SHX, SHA, ALR, TAS
+            0x9E: self.execute_shx,
+            0x9F: self.execute_sha,
+            0x93: self.execute_sha,
+            0x4B: self.execute_alr,
+            0x9B: self.execute_tas,
+            # ANC, ARR, AXS, SHY
+            0x0B: self.execute_anc,
+            0x2B: self.execute_anc,
+            0x6B: self.execute_arr,
+            0xCB: self.execute_axs,
+            0x9C: self.execute_shy,
+            # Unofficial SBC
+            0xEB: self.execute_sbc,
+            # XAA
+            0x8B: self.execute_xaa,
             # Explicitly map all KIL/JAM opcodes to a non-halting handler
             0x02: self.execute_kil,
             0x12: self.execute_kil,
@@ -1092,8 +1174,17 @@ class CPU:
                 "ROR",
                 "INC",
                 "DEC",
+                "DCP",
+                "ISC",
+                "SLO",
+                "RLA",
+                "SRE",
+                "RRA",
+                "SHY",
+                "SHX",
+                "SHA",
             ]:
-                # Write instructions always do dummy read
+                # Write/RMW instructions always do dummy read
                 self.memory.read((base_addr & 0xFF00) | ((base_addr + self.X) & 0xFF))
 
             return final_addr, page_crossing_penalty
@@ -1124,8 +1215,21 @@ class CPU:
                         (base_addr & 0xFF00) | ((base_addr + self.Y) & 0xFF)
                     )
                     page_crossing_penalty = 1
-            elif instruction in ["STA", "STX", "STY"]:
-                # Write instructions always do dummy read
+            elif instruction in [
+                "STA",
+                "STX",
+                "STY",
+                "DCP",
+                "ISC",
+                "SLO",
+                "RLA",
+                "SRE",
+                "RRA",
+                "TAS",
+                "SHX",
+                "SHA",
+            ]:
+                # Write/RMW instructions always do dummy read
                 self.memory.read((base_addr & 0xFF00) | ((base_addr + self.Y) & 0xFF))
 
             return final_addr, page_crossing_penalty
@@ -1183,8 +1287,19 @@ class CPU:
                         (base_addr & 0xFF00) | ((base_addr + self.Y) & 0xFF)
                     )
                     page_crossing_penalty = 1
-            elif instruction in ["STA", "STX", "STY"]:
-                # Write instructions always do dummy read
+            elif instruction in [
+                "STA",
+                "STX",
+                "STY",
+                "DCP",
+                "ISC",
+                "SLO",
+                "RLA",
+                "SRE",
+                "RRA",
+                "SHA",
+            ]:
+                # Write/RMW instructions always do dummy read
                 self.memory.read((base_addr & 0xFF00) | ((base_addr + self.Y) & 0xFF))
 
             return final_addr, page_crossing_penalty
@@ -1578,38 +1693,29 @@ class CPU:
         self.set_zero_negative(self.Y)
 
     def execute_bpl(self, operand, addressing_mode):
-        if self.N == 0:
-            self.PC = operand
+        # PC modification handled by _prepare_branch for correct page-crossing detection
+        pass
 
     def execute_bmi(self, operand, addressing_mode):
-        if self.N == 1:
-            self.PC = operand
+        pass
 
     def execute_bvc(self, operand, addressing_mode):
-        if self.V == 0:
-            self.PC = operand
+        pass
 
     def execute_bvs(self, operand, addressing_mode):
-        if self.V == 1:
-            self.PC = operand
+        pass
 
     def execute_bcc(self, operand, addressing_mode):
-        if self.C == 0:
-            self.PC = operand
+        pass
 
     def execute_bcs(self, operand, addressing_mode):
-        if self.C == 1:
-            self.PC = operand
+        pass
 
     def execute_bne(self, operand, addressing_mode):
-        # BNE branches if Z flag is 0 (not equal)
-        if self.Z == 0:
-            self.PC = operand
+        pass
 
     def execute_beq(self, operand, addressing_mode):
-        # BEQ branches if Z flag is 1 (equal)
-        if self.Z == 1:
-            self.PC = operand
+        pass
 
     def execute_jmp(self, operand, addressing_mode):
         self.PC = operand
@@ -1728,11 +1834,7 @@ class CPU:
     # Unofficial opcode implementations
     def execute_lax(self, operand, addressing_mode):
         """Load Accumulator and X - Load the same value into both A and X"""
-        if addressing_mode == "immediate":
-            value = self.memory.read(operand)
-        else:
-            value = self.memory.read(operand)
-
+        value = self.memory.read(operand)
         self.A = value
         self.X = value
         self.set_zero_negative(value)
@@ -1890,4 +1992,44 @@ class CPU:
         # LSR on accumulator
         self.C = self.A & 1
         self.A = self.A >> 1
+        self.set_zero_negative(self.A)
+
+    def execute_anc(self, operand, addressing_mode):
+        """ANC - AND immediate, then copy N flag to C"""
+        value = self.memory.read(operand)
+        self.A = self.A & value
+        self.set_zero_negative(self.A)
+        self.C = self.N
+
+    def execute_arr(self, operand, addressing_mode):
+        """ARR - AND immediate, then ROR with special V/C flag behavior"""
+        value = self.memory.read(operand)
+        self.A = self.A & value
+        # ROR using old carry
+        old_carry = self.C
+        self.A = (self.A >> 1) | (old_carry << 7)
+        self.set_zero_negative(self.A)
+        # C = bit 6 of result
+        self.C = (self.A >> 6) & 1
+        # V = bit 6 XOR bit 5 of result
+        self.V = ((self.A >> 6) ^ (self.A >> 5)) & 1
+
+    def execute_axs(self, operand, addressing_mode):
+        """AXS/SBX - (A & X) - immediate -> X, no borrow"""
+        value = self.memory.read(operand)
+        temp = (self.A & self.X) - value
+        self.C = 0 if temp < 0 else 1
+        self.X = temp & 0xFF
+        self.set_zero_negative(self.X)
+
+    def execute_shy(self, operand, addressing_mode):
+        """SHY - Store Y AND (high byte of effective address + 1)"""
+        high_byte = (operand >> 8) & 0xFF
+        value = self.Y & (high_byte + 1)
+        self.memory.write(operand & 0xFFFF, value)
+
+    def execute_xaa(self, operand, addressing_mode):
+        """XAA/ANE - Unstable: (A | magic) & X & imm -> A. Magic commonly 0xFF."""
+        value = self.memory.read(operand)
+        self.A = (self.A | 0xFF) & self.X & value
         self.set_zero_negative(self.A)

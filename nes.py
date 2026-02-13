@@ -10,13 +10,14 @@ from memory import Memory, Cartridge
 
 
 class NES:
-    def __init__(self):
+    def __init__(self, fast_mode=True):
         # Initialize components
         self.memory = Memory()
         self.region = 'NTSC'  # Default region, will be updated when ROM loads
         self.ppu = PPU(self.memory, self.region)
         self.cpu = CPU(self.memory)
         self.apu = APU(self, pal_mode=False)  # Will be reconfigured when ROM loads
+        self.fast_mode = fast_mode  # Skip non-critical updates for speed
 
         # Connect components
         self.memory.set_ppu(self.ppu)
@@ -109,27 +110,19 @@ class NES:
         cpu_cycles = self.cpu.step()
         self.cpu_cycles += cpu_cycles
 
-        # Update PPU open bus decay
-        self.ppu.update_bus_decay(cpu_cycles)
+        # Cache references for speed
+        ppu_step = self.ppu.step
 
-        # PPU cycles: 3 per CPU cycle (NTSC) or 3.2 average (PAL)
-        if self.region == 'PAL':
-            if not hasattr(self, 'pal_cycle_counter'):
-                self.pal_cycle_counter = 0
-            for _ in range(cpu_cycles * 3):
-                self.ppu.step(); self.ppu_cycles += 1
-            self.pal_cycle_counter += cpu_cycles
-            extra = self.pal_cycle_counter // 5
-            self.pal_cycle_counter %= 5
-            for _ in range(extra):
-                self.ppu.step(); self.ppu_cycles += 1
-        else:
-            for _ in range(cpu_cycles * 3):
-                self.ppu.step(); self.ppu_cycles += 1
+        # PPU cycles: 3 per CPU cycle (NTSC)
+        ppu_count = cpu_cycles * 3
+        for _ in range(ppu_count):
+            ppu_step()
+        self.ppu_cycles += ppu_count
 
-        # APU: 1 per CPU cycle
+        # APU must always run (frame counter/DMC IRQs are required for correct emulation)
+        apu_step = self.apu.step
         for _ in range(cpu_cycles):
-            self.apu.step()
+            apu_step()
 
     def step_frame(self):
         """Step one complete frame - using the unified step() method"""

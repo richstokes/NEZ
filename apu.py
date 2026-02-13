@@ -163,14 +163,15 @@ class PulseChannel:
             self.length_counter -= 1
 
     def update_mute(self):
-        """Update mute status based on timer period and sweep target"""
+        """Update mute status based on timer period and sweep target.
+        Per hardware: muting is independent of sweep enable flag.
+        Mute when current period < 8 OR target period > $7FF.
+        """
         if self.timer.period < 8:
             self.muted = True
-        elif self.sweep.enabled and self.sweep.shift > 0:
-            target = self.sweep.target_period(self)
-            self.muted = (target > 0x7FF) or (target < 8)
         else:
-            self.muted = False
+            target = self.sweep.target_period(self)
+            self.muted = target > 0x7FF
 
     def output(self):
         """Get the current output value"""
@@ -857,16 +858,14 @@ class APU:
             # Queue to SDL2 audio device
             result = sdl2.SDL_QueueAudio(self.audio_stream, audio_data, len(audio_data))
             if result != 0:
-                if hasattr(self, "init_audio_stream"):
-                    self.init_audio_stream(self.audio_stream)
+                error = sdl2.SDL_GetError() if SDL2_AVAILABLE else b'unknown'
+                print(f"APU: SDL_QueueAudio failed: {error}")
+                sdl2.SDL_ClearError()
 
         except Exception as e:
             print(f"APU: Error in _queue_audio: {e}")
-            # Attempt recovery - clear error and reinitialize
             if SDL2_AVAILABLE:
                 sdl2.SDL_ClearError()
-            if hasattr(self, "init_audio_stream"):
-                self.init_audio_stream(self.audio_stream)
 
         # Clear buffer after queuing
         self.audio_buffer.clear()
@@ -903,6 +902,7 @@ class APU:
             self.pulse1.envelope.loop = bool(value & 0x20)
             self.pulse1.constant_volume = bool(value & 0x10)
             self.pulse1.envelope.period = value & 0x0F
+            self.pulse1.envelope.divider.period = self.pulse1.envelope.period
 
         elif addr == 0x4001:  # Pulse 1 sweep
             self.pulse1.sweep.enabled = bool(value & 0x80)
@@ -974,8 +974,6 @@ class APU:
             if self.triangle.enabled:
                 self.triangle.length_counter = self.LENGTH_COUNTER_TABLE[value >> 3]
             self.triangle.linear_reload_flag = True
-            # Reset sequencer position on length reload
-            self.triangle.sequence_step = 0
 
         elif addr == 0x400C:  # Noise envelope
             self.noise.length_halt = bool(value & 0x20)
@@ -1032,6 +1030,7 @@ class APU:
             if self.dmc.enabled:
                 if self.dmc.bytes_remaining == 0:
                     self.dmc.restart()
+                    self.dmc.fill_sample_buffer()
             else:
                 # Disable and clear DMC state/IRQ when bit 4 is cleared
                 self.dmc.bytes_remaining = 0

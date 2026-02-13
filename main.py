@@ -6,6 +6,7 @@ Main entry point for the emulator
 import sys
 import os
 import time
+import struct
 import sdl2
 import sdl2.ext
 from PIL import Image
@@ -31,8 +32,20 @@ class NEZEmulator:
         self.audio_stream = None
         self.audio_device = None
 
-        # Controller state
+        # Controller state (Player 1)
         self.controller_state = {
+            "A": False,
+            "B": False,
+            "Select": False,
+            "Start": False,
+            "Up": False,
+            "Down": False,
+            "Left": False,
+            "Right": False,
+        }
+
+        # Controller state (Player 2)
+        self.controller2_state = {
             "A": False,
             "B": False,
             "Select": False,
@@ -47,6 +60,10 @@ class NEZEmulator:
         self.last_frame_time = 0
         self.target_fps = 60
         self.frame_time = 1.0 / self.target_fps
+        
+        # Frame skipping for performance - higher = faster but choppier
+        self.frame_skip = 2  # Only render every Nth frame (1 = no skip, 2 = half frames)
+        self.frame_counter = 0
 
     def initialize_sdl(self):
         """Initialize SDL2"""
@@ -235,6 +252,7 @@ class NEZEmulator:
             print("Reset NES")
         elif key == sdl2.SDLK_F12:  # Manual screenshot
             self.take_screenshot(f"screenshot_{int(time.time())}.png")
+        # Player 1: Arrow keys + J/K/RShift/Enter
         elif key == sdl2.SDLK_j:  # A button (match reference: J)
             self.controller_state["A"] = True
         elif key == sdl2.SDLK_k:  # B button (match reference: K)
@@ -251,19 +269,38 @@ class NEZEmulator:
             self.controller_state["Left"] = True
         elif key == sdl2.SDLK_RIGHT:
             self.controller_state["Right"] = True
+        # Player 2: WASD + G/H/Tab/Space
+        elif key == sdl2.SDLK_g:
+            self.controller2_state["A"] = True
+        elif key == sdl2.SDLK_h:
+            self.controller2_state["B"] = True
+        elif key == sdl2.SDLK_TAB:
+            self.controller2_state["Select"] = True
+        elif key == sdl2.SDLK_SPACE:
+            self.controller2_state["Start"] = True
+        elif key == sdl2.SDLK_w:
+            self.controller2_state["Up"] = True
+        elif key == sdl2.SDLK_s:
+            self.controller2_state["Down"] = True
+        elif key == sdl2.SDLK_a:
+            self.controller2_state["Left"] = True
+        elif key == sdl2.SDLK_d:
+            self.controller2_state["Right"] = True
 
         # Update controller input
         self.nes.set_controller_input(1, self.controller_state)
+        self.nes.set_controller_input(2, self.controller2_state)
 
     def handle_keyup(self, key):
         """Handle key release"""
-        if key == sdl2.SDLK_j:  # A button (match reference: J)
+        # Player 1
+        if key == sdl2.SDLK_j:
             self.controller_state["A"] = False
-        elif key == sdl2.SDLK_k:  # B button (match reference: K)
+        elif key == sdl2.SDLK_k:
             self.controller_state["B"] = False
-        elif key == sdl2.SDLK_RSHIFT:  # Select (match reference: Shift)
+        elif key == sdl2.SDLK_RSHIFT:
             self.controller_state["Select"] = False
-        elif key == sdl2.SDLK_RETURN:  # Start (match reference: Enter)
+        elif key == sdl2.SDLK_RETURN:
             self.controller_state["Start"] = False
         elif key == sdl2.SDLK_UP:
             self.controller_state["Up"] = False
@@ -273,29 +310,34 @@ class NEZEmulator:
             self.controller_state["Left"] = False
         elif key == sdl2.SDLK_RIGHT:
             self.controller_state["Right"] = False
+        # Player 2
+        elif key == sdl2.SDLK_g:
+            self.controller2_state["A"] = False
+        elif key == sdl2.SDLK_h:
+            self.controller2_state["B"] = False
+        elif key == sdl2.SDLK_TAB:
+            self.controller2_state["Select"] = False
+        elif key == sdl2.SDLK_SPACE:
+            self.controller2_state["Start"] = False
+        elif key == sdl2.SDLK_w:
+            self.controller2_state["Up"] = False
+        elif key == sdl2.SDLK_s:
+            self.controller2_state["Down"] = False
+        elif key == sdl2.SDLK_a:
+            self.controller2_state["Left"] = False
+        elif key == sdl2.SDLK_d:
+            self.controller2_state["Right"] = False
 
         # Update controller input
         self.nes.set_controller_input(1, self.controller_state)
+        self.nes.set_controller_input(2, self.controller2_state)
 
     def update_texture(self):
-        """Update SDL texture with NES screen data"""
+        """Update SDL texture with NES screen data - optimized"""
         screen = self.nes.get_screen()
-
-        # Convert screen pixels to bytes array for SDL_UpdateTexture
-        # Texture is SDL_PIXELFORMAT_ABGR8888. On little-endian, the byte order in memory is R, G, B, A.
-        pixels_bytes = bytearray(256 * 240 * 4)
-
-        for i, pixel in enumerate(screen):
-            # Pixel is stored as ABGR (0xAABBGGRR) in a 32-bit integer
-            base_idx = i * 4
-            # Pack bytes in memory as R, G, B, A for ABGR8888 on little-endian
-            pixels_bytes[base_idx + 0] = (pixel >> 0) & 0xFF   # R
-            pixels_bytes[base_idx + 1] = (pixel >> 8) & 0xFF   # G
-            pixels_bytes[base_idx + 2] = (pixel >> 16) & 0xFF  # B
-            pixels_bytes[base_idx + 3] = (pixel >> 24) & 0xFF  # A
-
-        # Update texture with correct byte order
-        sdl2.SDL_UpdateTexture(self.texture, None, bytes(pixels_bytes), 256 * 4)
+        # Fast pack using struct - converts list of ints to bytes directly
+        pixels_bytes = struct.pack(f'{len(screen)}I', *screen)
+        sdl2.SDL_UpdateTexture(self.texture, None, pixels_bytes, 256 * 4)
 
     def render(self):
         """Render the current frame"""
@@ -330,12 +372,19 @@ class NEZEmulator:
             sdl2.SDL_PauseAudioDevice(self.audio_device, 0)
 
         print("Starting emulator...")
-        print("Controls:")
+        print("Controls (Player 1):")
         print("  Arrow keys: D-pad")
         print("  J: A button")
         print("  K: B button")
         print("  Right Shift: Select")
         print("  Enter: Start")
+        print("Controls (Player 2):")
+        print("  WASD: D-pad")
+        print("  G: A button")
+        print("  H: B button")
+        print("  Tab: Select")
+        print("  Space: Start")
+        print("General:")
         print("  R: Reset")
         print("  F12: Take screenshot")
         print("  Escape: Quit")
@@ -352,22 +401,28 @@ class NEZEmulator:
 
             # Update controller state to NES before frame
             self.nes.set_controller_input(1, self.controller_state)
+            self.nes.set_controller_input(2, self.controller2_state)
 
-            # Run emulator for one frame - with periodic event handling for responsiveness
+            # Run emulator for one frame
             self.nes.ppu.render = False
             step_count = 0
-            while not self.nes.ppu.render and step_count < 200000:
-                self.nes.step()
+            ppu_render = self.nes.ppu
+            nes_step = self.nes.step
+            while not ppu_render.render and step_count < 200000:
+                nes_step()
                 step_count += 1
-                # Handle events every ~1000 steps to keep UI responsive
-                if step_count % 5000 == 0:
+                # Handle events every ~10000 steps to keep UI responsive
+                if step_count % 10000 == 0:
                     self.handle_events()
                     if not self.running:
                         break
 
-            # Update display
-            self.update_texture()
-            self.render()
+            # Frame skipping - only update display every Nth frame
+            self.frame_counter += 1
+            if self.frame_counter >= self.frame_skip:
+                self.frame_counter = 0
+                self.update_texture()
+                self.render()
 
             # Process any pending audio samples
             if hasattr(self.nes.apu, 'audio_buffer') and len(self.nes.apu.audio_buffer) > 0:
