@@ -449,18 +449,107 @@ class NEZEmulator:
         return True
 
 
+def run_headless(rom_path, duration=60, screenshot_path="headless_screenshot.png"):
+    """Run the emulator in headless mode (no SDL window).
+    Prints periodic stats and saves a final screenshot.
+    """
+    from PIL import Image
+
+    nes = NES()
+    if not nes.load_rom(rom_path):
+        print(f"Failed to load ROM: {rom_path}")
+        return 1
+
+    nes.reset()
+    apply_optimizations()
+
+    print(f"Headless mode: running {rom_path} for {duration}s ...")
+    start = time.time()
+    frame_count = 0
+    last_report = start
+
+    try:
+        while True:
+            elapsed = time.time() - start
+            if elapsed >= duration:
+                break
+
+            # Run one frame
+            nes.ppu.render = False
+            steps = 0
+            while not nes.ppu.render and steps < 200000:
+                nes.step()
+                steps += 1
+
+            frame_count += 1
+
+            # Report every 5 seconds
+            now = time.time()
+            if now - last_report >= 5.0:
+                fps = frame_count / (now - start)
+                cpu = nes.get_cpu_state()
+                ppu = nes.get_ppu_state()
+                print(
+                    f"[{elapsed:6.1f}s] frames={frame_count}  "
+                    f"fps={fps:.1f}  "
+                    f"PC=${cpu['PC']:04X}  "
+                    f"scanline={ppu['scanline']}  "
+                    f"ppu_frame={ppu['frame']}"
+                )
+                last_report = now
+    except KeyboardInterrupt:
+        print("\nStopped early by user")
+
+    elapsed = time.time() - start
+    fps = frame_count / elapsed if elapsed > 0 else 0
+    print(f"\nDone: {frame_count} frames in {elapsed:.1f}s ({fps:.1f} fps)")
+
+    # Save final screenshot from the PPU screen buffer
+    screen = nes.get_screen()
+    img = Image.new("RGBA", (256, 240))
+    pixels = []
+    for abgr in screen:
+        a = (abgr >> 24) & 0xFF
+        b = (abgr >> 16) & 0xFF
+        g = (abgr >> 8) & 0xFF
+        r = abgr & 0xFF
+        pixels.append((r, g, b, a))
+    img.putdata(pixels)
+    img.save(screenshot_path)
+    print(f"Screenshot saved to {screenshot_path}")
+    return 0
+
+
 def main():
     """Main entry point"""
-    if len(sys.argv) != 2:
-        print("Usage: python main.py <rom_file>")
-        print("Example: python main.py mario.nes")
+    import argparse
+
+    parser = argparse.ArgumentParser(description="NEZ - NES Emulator")
+    parser.add_argument("rom", help="Path to ROM file (e.g. mario.nes)")
+    parser.add_argument(
+        "--headless",
+        action="store_true",
+        help="Run without a window (no SDL). Prints progress and saves a screenshot.",
+    )
+    parser.add_argument(
+        "--duration",
+        type=int,
+        default=60,
+        help="Headless mode duration in seconds (default: 60)",
+    )
+    parser.add_argument(
+        "--screenshot",
+        default="headless_screenshot.png",
+        help="Path for the headless-mode screenshot (default: headless_screenshot.png)",
+    )
+    args = parser.parse_args()
+
+    if not os.path.exists(args.rom):
+        print(f"ROM file not found: {args.rom}")
         return 1
 
-    rom_path = sys.argv[1]
-
-    if not os.path.exists(rom_path):
-        print(f"ROM file not found: {rom_path}")
-        return 1
+    if args.headless:
+        return run_headless(args.rom, args.duration, args.screenshot)
 
     emulator = NEZEmulator()
 
@@ -468,7 +557,7 @@ def main():
     apply_optimizations()
 
     try:
-        success = emulator.run(rom_path)
+        success = emulator.run(args.rom)
         return 0 if success else 1
     except KeyboardInterrupt:
         print("\nEmulator stopped by user")

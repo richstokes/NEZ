@@ -55,16 +55,64 @@ Run the emulator with a ROM file:
 pipenv run python main.py mario.nes
 ```
 
+### Headless Mode
+
+Run without opening an SDL window. The emulator runs for a set duration, prints periodic stats, and saves a final screenshot:
+
+```bash
+pipenv run python main.py mario.nes --headless
+pipenv run python main.py mario.nes --headless --duration 120 --screenshot output.png
+```
+
+| Flag | Description | Default |
+|------|-------------|---------|
+| `--headless` | Run without a window (no SDL). Prints progress and saves a screenshot on exit. | off |
+| `--duration` | How many seconds to run in headless mode. | `60` |
+| `--screenshot` | File path for the headless-mode screenshot. | `headless_screenshot.png` |
+
+### Debug Headless Runner
+
+A separate script (`headless_run.py`) is available for debug-oriented headless runs with frame-level control and PPU log filtering:
+
+```bash
+pipenv run python headless_run.py mario.nes --frames 120 --out full.log --hits spr0.log
+```
+
+| Flag | Description | Default |
+|------|-------------|---------|
+| `--frames` | Number of frames to run. | `90` |
+| `--out` | Path to write full debug log output. | none |
+| `--hits` | Path to write filtered sprite-0 hit lines. | none |
+| `--continue-after-hit` | Don't stop early when a sprite-0 hit occurs; run the full frame count. | off |
+
 ### Controls
+
+**Player 1**
 
 | Key | NES Button |
 |-----|------------|
 | Arrow Keys | D-Pad |
 | J | A Button |
 | K | B Button |
-| Space | Select |
+| Right Shift | Select |
 | Enter | Start |
+
+**Player 2**
+
+| Key | NES Button |
+|-----|------------|
+| WASD | D-Pad |
+| G | A Button |
+| H | B Button |
+| Tab | Select |
+| Space | Start |
+
+**General**
+
+| Key | Action |
+|-----|--------|
 | R | Reset System |
+| F12 | Take Screenshot |
 | Escape | Quit |
 
 ## Contributions
