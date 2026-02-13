@@ -4,7 +4,7 @@ NES PPU (Picture Processing Unit) Emulator — Cython accelerated.
 Drop-in replacement for ppu.py.
 """
 
-cdef int[64] NES_PALETTE
+cdef unsigned int[64] NES_PALETTE
 NES_PALETTE = [
     0xFF666666, 0xFF002A88, 0xFF1412A7, 0xFF3B00A4,
     0xFF5C007E, 0xFF6E0040, 0xFF6C0600, 0xFF561D00,
@@ -420,7 +420,8 @@ cdef class PPU:
 
     cdef void _render_pixel_c(self):
         cdef int px, y, bg_pixel, bg_palette, sprite_pixel, sprite_palette
-        cdef int sprite_priority, palette_addr, color_index, color
+        cdef int sprite_priority, palette_addr, color_index
+        cdef unsigned int color
         cdef int sprite_info, r, g, b
         cdef bint sprite_zero
         cdef int mask = self.mask
@@ -474,7 +475,7 @@ cdef class PPU:
                 r = (r * 3) >> 2; b = (b * 3) >> 2
             if mask & 0x80:
                 r = (r * 3) >> 2; g = (g * 3) >> 2
-            color = (color & <int>0xFF000000) | (r << 16) | (g << 8) | b
+            color = (color & <unsigned int>0xFF000000) | (<unsigned int>r << 16) | (<unsigned int>g << 8) | <unsigned int>b
 
         self.screen[y * 256 + px] = color
 
