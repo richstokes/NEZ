@@ -616,16 +616,22 @@ class PPU:
             color_index &= 0x30
         color = self.nes_palette[color_index]
         # Color emphasis bits 5-7 of PPUMASK adjust RGB output
+        # On real hardware, emphasis DIMS the non-emphasized channels (~0.75x)
         if self.mask & 0xE0:
             r = color & 0xFF
             g = (color >> 8) & 0xFF
             b = (color >> 16) & 0xFF
-            if self.mask & 0x20:  # Red
-                r = min(255, int(r * 1.1))
-            if self.mask & 0x40:  # Green
-                g = min(255, int(g * 1.1))
-            if self.mask & 0x80:  # Blue
-                b = min(255, int(b * 1.1))
+            # NTSC: bit5=emphasize red, bit6=green, bit7=blue
+            # Each bit dims the OTHER two channels
+            if self.mask & 0x20:  # Emphasize red -> dim green and blue
+                g = int(g * 0.75)
+                b = int(b * 0.75)
+            if self.mask & 0x40:  # Emphasize green -> dim red and blue
+                r = int(r * 0.75)
+                b = int(b * 0.75)
+            if self.mask & 0x80:  # Emphasize blue -> dim red and green
+                r = int(r * 0.75)
+                g = int(g * 0.75)
             color = (color & 0xFF000000) | (b << 16) | (g << 8) | r
 
         self.screen[y * 256 + x] = color
@@ -971,10 +977,11 @@ class PPU:
             self.bg_high_byte = self.read_vram(pattern_addr)
             
         elif cycle_in_tile == 7:  # Cycle 8, 16, 24, 32, etc. - Load shift registers
-            # CRITICAL FIX: Load the UPPER 8 bits of shift registers with new tile data
-            # The NES PPU loads new data into bits 15-8, then shifts it down each cycle
-            self.bg_shift_pattern_low = (self.bg_shift_pattern_low & 0x00FF) | (self.bg_low_byte << 8)
-            self.bg_shift_pattern_high = (self.bg_shift_pattern_high & 0x00FF) | (self.bg_high_byte << 8)
+            # Load new tile data into LOWER 8 bits of shift registers.
+            # The PPU shifts left each cycle; after 8 shifts this data
+            # moves into the upper byte where the renderer reads it.
+            self.bg_shift_pattern_low = (self.bg_shift_pattern_low & 0xFF00) | self.bg_low_byte
+            self.bg_shift_pattern_high = (self.bg_shift_pattern_high & 0xFF00) | self.bg_high_byte
             
             # Expand attribute bits
             # Extract the 2-bit palette for this tile
@@ -982,6 +989,6 @@ class PPU:
             attr_low = 0xFF if (attr_bits & 1) else 0
             attr_high = 0xFF if (attr_bits & 2) else 0
             
-            # CRITICAL FIX: Load attribute data into UPPER 8 bits too
-            self.bg_shift_attrib_low = (self.bg_shift_attrib_low & 0x00FF) | (attr_low << 8)
-            self.bg_shift_attrib_high = (self.bg_shift_attrib_high & 0x00FF) | (attr_high << 8)
+            # Load attribute data into lower 8 bits too
+            self.bg_shift_attrib_low = (self.bg_shift_attrib_low & 0xFF00) | attr_low
+            self.bg_shift_attrib_high = (self.bg_shift_attrib_high & 0xFF00) | attr_high

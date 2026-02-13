@@ -71,24 +71,21 @@ class NES:
 
     def reset(self):
         """Reset CPU, PPU, and APU state (power-on like)."""
-        # CPU Reset Vector
-        low = self.memory.read(0xFFFC)
-        high = self.memory.read(0xFFFD)
-        pc = (high << 8) | low
-        self.cpu.PC = pc
-        self.cpu.S = 0xFD
-        self.cpu.I = 1
-        self.cpu.C = self.cpu.Z = self.cpu.D = self.cpu.B = self.cpu.V = self.cpu.N = 0
-        self.cpu.cycles = 0
-        self.cpu.total_cycles = 0
+        # Full CPU reset (reads reset vector, resets all internal state
+        # including interrupt tracking, DMA cycles, odd_cycle, etc.)
+        self.cpu.reset()
+
         # Clear PPU timing/frame state
         self.ppu.frame = 0
         self.ppu.scanline = 0
         self.ppu.cycle = 0
         self.ppu.render = False
-        # Clear any pending NMI
+        # Clear any pending NMI at NES level
         self.nmi_pending = False
         self.nmi_delay = 0
+        # Reset NES-level cycle counters
+        self.cpu_cycles = 0
+        self.ppu_cycles = 0
         # APU basic reset if available
         if hasattr(self.apu, 'reset'):
             try:

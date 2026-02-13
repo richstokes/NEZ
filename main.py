@@ -148,8 +148,10 @@ class NEZEmulator:
             sdl2.SDL_RenderPresent(self.renderer)
             
             # Now create a surface to hold the pixel data
+            # Use ABGR8888 so that on little-endian the byte order is R,G,B,A
+            # which matches PIL's 'RGBA' raw mode.
             surface = sdl2.SDL_CreateRGBSurfaceWithFormat(
-                0, width, height, 32, sdl2.SDL_PIXELFORMAT_RGBA8888
+                0, width, height, 32, sdl2.SDL_PIXELFORMAT_ABGR8888
             )
             
             if not surface:
@@ -161,7 +163,7 @@ class NEZEmulator:
             result = sdl2.SDL_RenderReadPixels(
                 self.renderer,
                 None,  # Read entire viewport
-                sdl2.SDL_PIXELFORMAT_RGBA8888,
+                sdl2.SDL_PIXELFORMAT_ABGR8888,
                 surface.contents.pixels,
                 surface.contents.pitch
             )
