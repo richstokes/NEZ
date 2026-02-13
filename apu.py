@@ -21,6 +21,7 @@ import struct
 
 class Divider:
     """Timer/Divider implementation used throughout the APU"""
+    __slots__ = ('period', 'counter', 'step', 'limit', 'from_val', 'loop')
 
     def __init__(self):
         self.period = 0
@@ -46,6 +47,7 @@ class Divider:
 
 class Envelope:
     """Envelope generator for pulse and noise channels"""
+    __slots__ = ('period', 'step', 'loop', 'start', 'divider')
 
     def __init__(self):
         self.period = 0
@@ -71,6 +73,7 @@ class Envelope:
 
 class Sweep:
     """Sweep unit for pulse channels"""
+    __slots__ = ('enabled', 'period', 'negate', 'shift', 'reload', 'divider')
 
     def __init__(self):
         self.enabled = False
@@ -109,6 +112,9 @@ class Sweep:
 
 class PulseChannel:
     """NES Pulse channel implementation"""
+    __slots__ = ('channel', 'enabled', 'length_counter', 'length_halt',
+                 'timer', 'duty', 'duty_step', 'envelope', 'constant_volume',
+                 'sweep', 'muted')
 
     # Duty cycle lookup table
     DUTY_CYCLES = [
@@ -190,6 +196,9 @@ class PulseChannel:
 
 class TriangleChannel:
     """NES Triangle channel implementation"""
+    __slots__ = ('enabled', 'length_counter', 'length_halt',
+                 'linear_counter', 'linear_reload', 'linear_reload_flag',
+                 'timer', 'sequence_step')
 
     # Triangle wave sequence
     TRIANGLE_SEQUENCE = [
@@ -280,6 +289,9 @@ class TriangleChannel:
 
 class NoiseChannel:
     """NES Noise channel implementation"""
+    __slots__ = ('enabled', 'length_counter', 'length_halt', 'pal_mode',
+                 'timer', 'envelope', 'constant_volume',
+                 'shift_register', 'mode')
 
     # Noise period lookup tables
     NOISE_PERIODS_NTSC = [
@@ -379,6 +391,11 @@ class NoiseChannel:
 
 class DMCChannel:
     """NES Delta Modulation Channel implementation"""
+    __slots__ = ('enabled', 'pal_mode', 'memory',
+                 'irq_enable', 'irq_flag', 'loop', 'timer',
+                 'output_level', 'shift_register', 'bits_remaining', 'silence',
+                 'sample_address', 'sample_length', 'current_address',
+                 'bytes_remaining', 'sample_buffer', 'sample_buffer_empty')
 
     # DMC period lookup tables
     DMC_PERIODS_NTSC = [
@@ -528,6 +545,8 @@ class DMCChannel:
 
 class FrameSequencer:
     """APU Frame sequencer (controls envelope, sweep, and length counters)"""
+    __slots__ = ('mode', 'irq_inhibit', 'irq_flag', 'step', 'cycles',
+                 'reset_sequencer', 'pal_mode')
 
     def __init__(self, pal_mode=False):
         self.mode = 0  # 0 = 4-step, 1 = 5-step
@@ -800,6 +819,34 @@ class APU:
         if self.cycle_accumulator >= self.cycles_per_sample:
             self.cycle_accumulator -= self.cycles_per_sample
             self._generate_sample()
+
+    def step_n(self, n):
+        """Execute n APU cycles in a tight loop (avoids per-call Python overhead)."""
+        # Cache hot attributes as locals
+        parity = self._cpu_cycle_parity
+        tri_clock = self.triangle.clock_timer
+        dmc_clock = self.dmc.clock_timer
+        p1_clock = self.pulse1.clock_timer
+        p2_clock = self.pulse2.clock_timer
+        noise_clock = self.noise.clock_timer
+        fs_clock = self.frame_sequencer.clock
+        cps = self.cycles_per_sample
+        acc = self.cycle_accumulator
+        for _ in range(n):
+            parity ^= 1
+            tri_clock()
+            dmc_clock()
+            if parity:
+                p1_clock()
+                p2_clock()
+                noise_clock()
+            fs_clock(self)
+            acc += 1.0
+            if acc >= cps:
+                acc -= cps
+                self._generate_sample()
+        self._cpu_cycle_parity = parity
+        self.cycle_accumulator = acc
 
     def _generate_sample(self):
         """Generate an audio sample - matches reference implementation"""

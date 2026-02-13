@@ -101,10 +101,10 @@ class NEZEmulator:
             print(f"Renderer creation failed: {sdl2.SDL_GetError()}")
             return False
 
-        # Create texture for NES screen (256x240 ABGR) to match reference implementation
+        # Create texture for NES screen (256x240 ARGB)
         self.texture = sdl2.SDL_CreateTexture(
             self.renderer,
-            sdl2.SDL_PIXELFORMAT_ABGR8888,
+            sdl2.SDL_PIXELFORMAT_ARGB8888,
             sdl2.SDL_TEXTUREACCESS_STREAMING,
             256,
             240,
@@ -476,12 +476,8 @@ def run_headless(rom_path, duration=60, screenshot_path="headless_screenshot.png
             if elapsed >= duration:
                 break
 
-            # Run one frame
-            nes.ppu.render = False
-            steps = 0
-            while not nes.ppu.render and steps < 200000:
-                nes.step()
-                steps += 1
+            # Run one frame using the fast path
+            nes.run_frame_fast()
 
             frame_count += 1
 

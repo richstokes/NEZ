@@ -121,6 +121,71 @@ class NES:
         for _ in range(cpu_cycles):
             apu_step()
 
+    def run_frame_fast(self):
+        """Run one complete frame in a tight loop with cached locals.
+        Avoids per-step method-call overhead of step() by inlining the
+        NMI check + CPU/PPU/APU dispatch into a single scope.
+        """
+        self.ppu.render = False
+
+        # Cache everything as locals for speed
+        cpu = self.cpu
+        ppu = self.ppu
+        apu = self.apu
+        cpu_step = cpu.step
+        ppu_step = ppu.step
+        apu_step = apu.step
+        nmi_handler = self.handle_nmi
+        step_limit = 200000
+        steps = 0
+
+        nmi_pending = self.nmi_pending
+        nmi_delay = self.nmi_delay
+        cpu_cycles_total = self.cpu_cycles
+        ppu_cycles_total = self.ppu_cycles
+
+        while not ppu.render and steps < step_limit:
+            steps += 1
+
+            # Inline NMI handling
+            if nmi_pending:
+                if nmi_delay > 0:
+                    nmi_delay -= 1
+                    self.nmi_delay = nmi_delay
+                else:
+                    self.nmi_pending = False
+                    nmi_handler()
+                    nmi_pending = False
+                # Re-read in case handler changed them
+                nmi_pending = self.nmi_pending
+                nmi_delay = self.nmi_delay
+
+            # CPU step
+            cc = cpu_step()
+            cpu_cycles_total += cc
+
+            # PPU: 3 cycles per CPU cycle (NTSC)
+            ppu_n = cc * 3
+            for _ in range(ppu_n):
+                ppu_step()
+            ppu_cycles_total += ppu_n
+
+            # APU: 1 cycle per CPU cycle
+            for _ in range(cc):
+                apu_step()
+
+            # Re-sync NMI state (PPU may trigger NMI during its step)
+            nmi_pending = self.nmi_pending
+            nmi_delay = self.nmi_delay
+
+        # Write back counters
+        self.cpu_cycles = cpu_cycles_total
+        self.ppu_cycles = ppu_cycles_total
+        self.nmi_pending = nmi_pending
+        self.nmi_delay = nmi_delay
+
+        return self.ppu.screen
+
     def step_frame(self):
         """Step one complete frame - using the unified step() method"""
         step_count = 0

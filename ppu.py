@@ -86,8 +86,7 @@ class PPU:
         # Optimized rendering: only render when needed
         self.rendering_enabled = True
 
-        # NES color palette (32-bit ARGB values converted to ABGR for SDL compatibility)
-        # Reference implementation uses to_pixel_format() to convert ARGB->ABGR
+        # NES color palette (32-bit ARGB values, used directly with SDL_PIXELFORMAT_ARGB8888)
         nes_palette_argb = [
             0xFF666666,
             0xFF002A88,
@@ -155,16 +154,8 @@ class PPU:
             0xFF000000,
         ]
 
-        # Convert ARGB to ABGR format like reference implementation
-        self.nes_palette = []
-        for color in nes_palette_argb:
-            # Convert ARGB (0xAARRGGBB) to ABGR (0xAABBGGRR)
-            a = (color >> 24) & 0xFF
-            r = (color >> 16) & 0xFF
-            g = (color >> 8) & 0xFF
-            b = color & 0xFF
-            abgr = (a << 24) | (b << 16) | (g << 8) | r
-            self.nes_palette.append(abgr)
+        # Use ARGB values directly (matching SDL_PIXELFORMAT_ARGB8888)
+        self.nes_palette = list(nes_palette_argb)
 
         # Initialize palette RAM to mirror the reference implementation
         # Two-stage lookup: palette_ram[index] -> nes_palette[result]
@@ -308,8 +299,13 @@ class PPU:
         self.refresh_bus_bits(0xFF, value)
 
         if addr == 0x2000:  # PPUCTRL
+            old_ctrl = self.ctrl
             self.ctrl = value
             self.t = (self.t & 0xF3FF) | ((value & 0x03) << 10)
+            # If NMI enable was just turned on while VBlank is active, trigger NMI
+            if (not (old_ctrl & 0x80)) and (value & 0x80) and (self.status & 0x80):
+                if hasattr(self.memory, "nes") and hasattr(self.memory.nes, "trigger_nmi"):
+                    self.memory.nes.trigger_nmi()
         elif addr == 0x2001:  # PPUMASK
             self.mask = value
         elif addr == 0x2003:  # OAMADDR
@@ -345,10 +341,6 @@ class PPU:
     def read_vram(self, addr):
         """Read from PPU VRAM - matches reference implementation"""
         addr = addr & 0x3FFF
-
-        # Update bus like reference implementation
-        self.bus = addr
-
 
         if addr < 0x2000:
             # Pattern tables - handled by cartridge (CHR ROM/RAM)
@@ -439,6 +431,10 @@ class PPU:
                 # Render pixel if rendering is enabled
                 if self.mask & (self.SHOW_BG | self.SHOW_SPRITE):
                     self.render_pixel()
+                else:
+                    # Rendering disabled: output backdrop color
+                    px = self.cycle - 1
+                    self.screen[self.scanline * 256 + px] = self.nes_palette[self.palette_ram[0] & 0x3F]
                 
                 # Shift BG registers after rendering (hardware-accurate timing)
                 if self.mask & self.SHOW_BG:
@@ -557,6 +553,12 @@ class PPU:
             ):
                 self.cycle += 1
 
+    def step_n(self, n):
+        """Execute n PPU cycles in a tight loop (avoids per-call Python overhead)."""
+        _step = self.step
+        for _ in range(n):
+            _step()
+
     def render_pixel(self):
         """Render a single pixel"""
         x = self.cycle - 1
@@ -610,17 +612,18 @@ class PPU:
 
         # Get final color from palette (two-stage lookup like reference)
         color_index = self.palette_ram[palette_addr] & 0x3F
-        # Apply grayscale (PPUMASK bit0) - force upper two bits preserved, lower bits masked to 0x30 boundaries? NES: grayscale masks palette index to 0x30 steps by clearing bits 0-1-2? Actually bit0 of PPUMASK forces color emphasis to use only grayscale by AND with 0x30 and OR with bottom? We'll approximate by masking out color bits (retain universal background)."""
-        if self.mask & 0x01:  # Grayscale
-            # Hardware-like: mask to grayscale by retaining only intensity bits
+        # Grayscale (PPUMASK bit 0): AND palette index with 0x30 to keep only
+        # the intensity column, zeroing the hue bits.
+        if self.mask & 0x01:
             color_index &= 0x30
         color = self.nes_palette[color_index]
         # Color emphasis bits 5-7 of PPUMASK adjust RGB output
         # On real hardware, emphasis DIMS the non-emphasized channels (~0.75x)
         if self.mask & 0xE0:
-            r = color & 0xFF
+            # ARGB format: R bits 16-23, G bits 8-15, B bits 0-7
+            r = (color >> 16) & 0xFF
             g = (color >> 8) & 0xFF
-            b = (color >> 16) & 0xFF
+            b = color & 0xFF
             # NTSC: bit5=emphasize red, bit6=green, bit7=blue
             # Each bit dims the OTHER two channels
             if self.mask & 0x20:  # Emphasize red -> dim green and blue
@@ -632,7 +635,7 @@ class PPU:
             if self.mask & 0x80:  # Emphasize blue -> dim red and green
                 r = int(r * 0.75)
                 g = int(g * 0.75)
-            color = (color & 0xFF000000) | (b << 16) | (g << 8) | r
+            color = (color & 0xFF000000) | (r << 16) | (g << 8) | b
 
         self.screen[y * 256 + x] = color
 
@@ -749,7 +752,8 @@ class PPU:
                 self.pending_sprite_count = 0
                 self.sprite_overflow = False
             # Decide if we process a sprite this cycle group
-            if (cyc - 65) % 8 == 0 and self.pending_sprite_count < 8 and self.sprite_eval_index < 64:
+            # Real hardware checks ~1 sprite per 3 cycles; use mod 3 to cover all 64 entries
+            if (cyc - 65) % 3 == 0 and self.pending_sprite_count < 8 and self.sprite_eval_index < 64:
                 i = self.sprite_eval_index
                 base = i * 4
                 y = self.oam[base]
@@ -764,7 +768,7 @@ class PPU:
                     self.pending_sprite_count += 1
                 self.sprite_eval_index += 1
             # If we already have 8 sprites, set overflow flag if additional in range appear later
-            elif (cyc - 65) % 8 == 0 and self.pending_sprite_count >= 8 and self.sprite_eval_index < 64:
+            elif (cyc - 65) % 3 == 0 and self.pending_sprite_count >= 8 and self.sprite_eval_index < 64:
                 i = self.sprite_eval_index
                 base = i * 4
                 y = self.oam[base]
