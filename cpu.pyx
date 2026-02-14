@@ -1,7 +1,6 @@
 # cython: boundscheck=False, wraparound=False, cdivision=True, language_level=3
 """
 NES 6502 CPU Emulator — Cython accelerated.
-Drop-in replacement for cpu.py.
 """
 
 # ── Cycle lookup table (256 entries) ──

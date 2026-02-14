@@ -1,7 +1,6 @@
 # cython: boundscheck=False, wraparound=False, cdivision=True, language_level=3
 """
 NES Audio Processing Unit (APU) — Cython accelerated.
-Drop-in replacement for apu.py.
 """
 
 try:

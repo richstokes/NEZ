@@ -1,7 +1,6 @@
 # cython: boundscheck=False, wraparound=False, cdivision=True, language_level=3
 """
 NES PPU (Picture Processing Unit) Emulator — Cython accelerated.
-Drop-in replacement for ppu.py.
 """
 
 cdef unsigned int[64] NES_PALETTE
@@ -440,13 +439,14 @@ cdef class PPU:
 
         sprite_pixel = 0; sprite_palette = 0; sprite_priority = 0; sprite_zero = False
         if mask & 0x10:
-            if px >= 8 or (mask & 0x04):
-                sprite_info = self._render_sprites_c(bg_pixel)
-                if sprite_info:
-                    sprite_pixel = sprite_info & 0x3
-                    sprite_palette = (sprite_info >> 2) & 0x3
-                    sprite_priority = (sprite_info >> 5) & 1
-                    sprite_zero = (sprite_info >> 6) & 1
+            # Always tick sprite shift registers (hardware clocks them every cycle);
+            # left-column mask only suppresses the *output*.
+            sprite_info = self._render_sprites_c(bg_pixel)
+            if sprite_info and (px >= 8 or (mask & 0x04)):
+                sprite_pixel = sprite_info & 0x3
+                sprite_palette = (sprite_info >> 2) & 0x3
+                sprite_priority = (sprite_info >> 5) & 1
+                sprite_zero = (sprite_info >> 6) & 1
 
         palette_addr = 0
         if bg_pixel == 0 and sprite_pixel == 0:
@@ -508,10 +508,13 @@ cdef class PPU:
         cdef int i, attr, pixel_low, pixel_high, pixel, palette, priority, px
         cdef bint is_sprite0
         cdef int mask = self.mask
+        cdef int result = 0
 
         if not (mask & 0x10) or self.sprite_count == 0:
             return 0
         px = self.cycle - 1
+        # Process ALL sprites every cycle (real NES clocks all shift registers
+        # in parallel). Only record the first (highest-priority) opaque pixel.
         for i in range(self.sprite_count):
             if self.sprite_latch_x[i] > 0:
                 self.sprite_latch_x[i] -= 1
@@ -524,18 +527,19 @@ cdef class PPU:
             pixel = pixel_low | (pixel_high << 1)
             if pixel == 0:
                 continue
-            palette = attr & 0x3
-            priority = (attr >> 5) & 1
-            is_sprite0 = self.sprite_is_sprite0[i]
-            if (is_sprite0 and pixel > 0 and bg_pixel > 0 and px < 255
-                and (mask & 0x08) and (mask & 0x10)
-                and not (self.status & 0x40)
-                and not (px < 8 and not (mask & 0x02))
-                and not (px < 8 and not (mask & 0x04))):
-                self.status |= 0x40
-                self.sprite_zero_hit = True
-            return pixel | (palette << 2) | (priority << 5) | ((<int>is_sprite0) << 6)
-        return 0
+            if result == 0:
+                palette = attr & 0x3
+                priority = (attr >> 5) & 1
+                is_sprite0 = self.sprite_is_sprite0[i]
+                if (is_sprite0 and bg_pixel > 0 and px < 255
+                    and (mask & 0x08) and (mask & 0x10)
+                    and not (self.status & 0x40)
+                    and not (px < 8 and not (mask & 0x02))
+                    and not (px < 8 and not (mask & 0x04))):
+                    self.status |= 0x40
+                    self.sprite_zero_hit = True
+                result = pixel | (palette << 2) | (priority << 5) | ((<int>is_sprite0) << 6)
+        return result
 
     def render_sprites(self, bg_pixel):
         return self._render_sprites_c(bg_pixel)
@@ -574,22 +578,30 @@ cdef class PPU:
                 self.sprite_eval_index = 0
                 self.pending_sprite_count = 0
                 self.sprite_overflow = False
-            if (cyc - 65) % 3 == 0 and self.sprite_eval_index < 64:
+            # Check sprites every 3 cycles
+            if (cyc - 65) % 3 == 0 and self.pending_sprite_count < 8 and self.sprite_eval_index < 64:
                 i = self.sprite_eval_index
                 base = i * 4
                 y = self.oam[base]
                 start = y + 1
                 end = start + sprite_height - 1
                 if start <= target_scanline <= end:
-                    if self.pending_sprite_count < 8:
-                        self.pending_sprite_indices[self.pending_sprite_count] = i
-                        self.pending_sprite_attr[self.pending_sprite_count] = self.oam[base + 2]
-                        self.pending_sprite_x[self.pending_sprite_count] = self.oam[base + 3]
-                        self.pending_sprite_is_sprite0[self.pending_sprite_count] = (i == 0)
-                        self.pending_sprite_count += 1
-                    else:
-                        self.status |= 0x20
-                        self.sprite_overflow = True
+                    self.pending_sprite_indices[self.pending_sprite_count] = i
+                    self.pending_sprite_attr[self.pending_sprite_count] = self.oam[base + 2]
+                    self.pending_sprite_x[self.pending_sprite_count] = self.oam[base + 3]
+                    self.pending_sprite_is_sprite0[self.pending_sprite_count] = (i == 0)
+                    self.pending_sprite_count += 1
+                self.sprite_eval_index += 1
+            # Continue checking for overflow after we have 8 sprites
+            elif (cyc - 65) % 3 == 0 and self.pending_sprite_count >= 8 and self.sprite_eval_index < 64:
+                i = self.sprite_eval_index
+                base = i * 4
+                y = self.oam[base]
+                start = y + 1
+                end = start + sprite_height - 1
+                if start <= target_scanline <= end:
+                    self.status |= 0x20
+                    self.sprite_overflow = True
                 self.sprite_eval_index += 1
             return
 

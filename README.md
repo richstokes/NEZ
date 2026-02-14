@@ -44,7 +44,7 @@ Edit, September 2025: This was a horrible idea. LLMs are creating a mess. Python
 - **Python 3.13+**
 - **pipenv** — install with `pip install pipenv` if you don't have it
 
-The Pipfile pulls in [PySDL2](https://pypi.org/project/PySDL2/) (plus the bundled SDL2 binary), [Pillow](https://pypi.org/project/Pillow/) for screenshots, [Cython](https://cython.org/) for the accelerated PPU, and a few build utilities.
+The Pipfile pulls in [PySDL2](https://pypi.org/project/PySDL2/) (plus the bundled SDL2 binary), [Pillow](https://pypi.org/project/Pillow/) for screenshots, [Cython](https://cython.org/) for the accelerated PPU/APU/CPU, and a few build utilities.
 
 ## Installation
 
@@ -54,25 +54,31 @@ pipenv install
 
 This creates a virtualenv and installs all runtime dependencies.
 
-### Building the Cython PPU (recommended)
+### Building the Cython extensions (required)
 
-The PPU (graphics engine) has an optional Cython-accelerated version that is **essential for playable performance**. Without it the emulator falls back to the pure-Python PPU, which is significantly slower.
+The PPU, APU, and CPU are implemented as Cython (`.pyx`) modules and **must be compiled** before running the emulator.
 
 ```bash
 pipenv run python setup.py build_ext --inplace
 ```
 
-This compiles `ppu.pyx` into a native C extension (`.so` on macOS/Linux, `.pyd` on Windows). You only need to rebuild after modifying `ppu.pyx`.
+This compiles `ppu.pyx`, `apu.pyx`, and `cpu.pyx` into native C extensions (`.so` on macOS/Linux, `.pyd` on Windows). You only need to rebuild after modifying a `.pyx` file.
 
 ## Usage
 
-Run the emulator with a ROM file:
+The easiest way to run the emulator is via `run.sh`, which automatically builds the Cython extensions before launching:
 
 ```bash
-pipenv run python main.py <rom_file>
+./run.sh <rom_file>
 ```
 
 For example:
+
+```bash
+./run.sh mario.nes
+```
+
+Or run manually after building:
 
 ```bash
 pipenv run python main.py mario.nes
