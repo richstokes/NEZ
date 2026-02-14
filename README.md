@@ -4,19 +4,32 @@ A Nintendo Entertainment System (NES) emulator **vibe-coded** in Python.
 
 An experiment to see how close to a working emulator I can get, using both Warp and GitHub Copilot with various incantations of prompts and models. I'll write a bit more about this later if it gets close to working. I'm reviewing basically none of the generated code, instead I'm just giving the LLMs feedback based on my experience when running the emulator and steering it on areas I think it may need to focus on.  
 
+
+
+### Updates
+
+#### August 2025
+
 Right now it can _kind_ of load some games/ROMs, but theres a ton of corruption and performance is terrible!
 
 I had assumed that being a 40 year old, incredibly well documented platform, that the LLMs may have been able to build this relatively easily. So far it's been a nightmare, but I'm stubborn so going to keep nudging this along.
 
-Edit, September 2025: This was a horrible idea. LLMs are creating a mess. Python isn't fast enough. I will revisit this down the line and see if AI is at a point where this is less painful!
+#### September 2025
 
+This project was a horrible idea. LLMs are creating a mess. Python isn't fast enough. I will revisit this down the line and see if AI is at a point where this is less painful!
 
+#### February 2026
+
+Revisited with Opus 4.6. Had it review/update the codebase with a view to adding any missing or incomplete functions. I then had it add a headless mode, so that it could run the emulator itself and quickly gather stats. Eventually it profiled itself and we made the decision to move most of core logic to Cython (the pyx files) which has made a huge difference. I knew from the get-go that getting this to run on pure Python was a long shot, but this seems like a good compromise for now. 
 
 ## Screenshots
 
+Feb 2026, with latest Opus model, its basically working! Framerate isn't great but it's playable:  
 <p align="center">
     <img src="screenshots/c0.png" alt="Screenshot of NEZ running" width="50%">
 </p>
+
+Earlier/2025 screenshots:  
 <p align="center">
     <img src="screenshots/c1.png" alt="Screenshot of NEZ running" width="50%">
 </p>
