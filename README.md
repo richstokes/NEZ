@@ -54,7 +54,7 @@ Earlier/2025 screenshots:
 - The lower models often like to duplicate functions. Again it seems that they are not reviewing/considering the full context of the codebase (even when asked). Often times I've had to tell it to go and consolidate duplicate/similar methods. Similarly they have a tendency to create placeholder or stub methods.
 - As a result, using non-premium models is basically pointless / will result in a mess and set you back.
 
-A lot of these issues are fixed now.
+A lot of these issues are fixed now (as of Feb '26).
 
 ## Prerequisites
 
