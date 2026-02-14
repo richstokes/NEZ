@@ -7,6 +7,7 @@ import sys
 import os
 import time
 import struct
+import ctypes
 import sdl2
 import sdl2.ext
 from PIL import Image
@@ -62,8 +63,11 @@ class NEZEmulator:
         self.frame_time = 1.0 / self.target_fps
         
         # Frame skipping for performance - higher = faster but choppier
-        self.frame_skip = 2  # Only render every Nth frame (1 = no skip, 2 = half frames)
+        self.frame_skip = 1  # Only render every Nth frame (1 = no skip, 2 = half frames)
         self.frame_counter = 0
+
+        # Pre-allocated pixel buffer for fast texture updates
+        self._pixel_buf = (ctypes.c_uint32 * (256 * 240))()
 
     def initialize_sdl(self):
         """Initialize SDL2"""
@@ -94,7 +98,7 @@ class NEZEmulator:
         self.renderer = sdl2.SDL_CreateRenderer(
             self.window,
             -1,
-            sdl2.SDL_RENDERER_ACCELERATED | sdl2.SDL_RENDERER_PRESENTVSYNC,
+            sdl2.SDL_RENDERER_ACCELERATED,
         )
 
         if not self.renderer:
@@ -275,18 +279,12 @@ class NEZEmulator:
         self.nes.set_controller_input(2, self.controller2_state)
 
     def update_texture(self):
-        """Update SDL texture with NES screen data - optimized"""
+        """Update SDL texture with NES screen data - optimized with ctypes buffer"""
         screen = self.nes.get_screen()
-        # Fast pack using struct - converts list of ints to bytes directly
-        try:
-            pixels_bytes = struct.pack(f'{len(screen)}I', *screen)
-        except struct.error:
-            # Some pixel value is outside unsigned 32-bit range; log and mask
-            bad = [(i, v) for i, v in enumerate(screen) if v < 0 or v > 0xFFFFFFFF]
-            if bad:
-                print(f"Warning: {len(bad)} screen pixel(s) out of uint32 range, e.g. {bad[:3]}")
-            pixels_bytes = struct.pack(f'{len(screen)}I', *(v & 0xFFFFFFFF for v in screen))
-        sdl2.SDL_UpdateTexture(self.texture, None, pixels_bytes, 256 * 4)
+        buf = self._pixel_buf
+        for i in range(256 * 240):
+            buf[i] = screen[i]
+        sdl2.SDL_UpdateTexture(self.texture, None, buf, 256 * 4)
 
     def render(self):
         """Render the current frame"""
@@ -352,19 +350,8 @@ class NEZEmulator:
             self.nes.set_controller_input(1, self.controller_state)
             self.nes.set_controller_input(2, self.controller2_state)
 
-            # Run emulator for one frame
-            self.nes.ppu.render = False
-            step_count = 0
-            ppu_render = self.nes.ppu
-            nes_step = self.nes.step
-            while not ppu_render.render and step_count < 200000:
-                nes_step()
-                step_count += 1
-                # Handle events every ~10000 steps to keep UI responsive
-                if step_count % 10000 == 0:
-                    self.handle_events()
-                    if not self.running:
-                        break
+            # Run emulator for one frame (Cython fast path)
+            self.nes.run_frame_fast()
 
             # Frame skipping - only update display every Nth frame
             self.frame_counter += 1
