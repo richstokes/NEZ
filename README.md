@@ -22,6 +22,8 @@ This project was a horrible idea. LLMs are creating a mess. Python isn't fast en
 
 Revisited with Opus 4.6. Had it review/update the codebase with a view to adding any missing or incomplete functions. I then had it add a headless mode, so that it could run the emulator itself and quickly gather stats. Eventually it profiled itself and we made the decision to move most of core logic to Cython (the pyx files) which has made a huge difference. I knew from the get-go that getting this to run on pure Python was a long shot, but this seems like a good compromise for now. Mario now runs at 60fps with no obvious issues.
 
+I think the most interesting takeaway so far, is that prior to this attempt I had a banner saying "99% not working" - it was terrible. Within one generation of LLM updates, I'd say thats reversed - its now 99% working.
+
 ## Screenshots
 
 Feb 2026, with latest Opus model, its basically working! Framerate isn't great but it's playable:  
