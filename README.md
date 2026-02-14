@@ -42,7 +42,7 @@ Earlier/2025 screenshots:
 
 
 
-## Things I have found are not great when attempting this
+## Things I have found are not great when attempting this (mid-2025)
 
 - Can blow through a months Warp quota in a couple of hours when asking it to dive deep into implementing/reviewing logs. Copilot isn't much better. This experiment is doing a lot of iterating/scanning huge log output so perhaps understandable, but it doesn't feel like you get many credits for your money.
 - GitHub Copilot can't read zsh terminal output properly. Switching it to bash seems to be more reliable.
@@ -51,6 +51,8 @@ Earlier/2025 screenshots:
 - The "lower" models (GPT <5, the free models with copilot, gemini) are often lazy and like to either propose changes vaguely, and not actually implement them even though they are in agent mode. Or they don't consider the full context, often deleting large swathes of code with placeholders like `# Rest of code here`. Sometimes I catch this, but I'm mostly not reviewing the code. Instead, commit often and revert if it seems to have regressed. I'm sure the spaghetti factor here is horrendous as a result.
 - The lower models often like to duplicate functions. Again it seems that they are not reviewing/considering the full context of the codebase (even when asked). Often times I've had to tell it to go and consolidate duplicate/similar methods. Similarly they have a tendency to create placeholder or stub methods.
 - As a result, using non-premium models is basically pointless / will result in a mess and set you back.
+
+A lot of these issues are fixed now.
 
 ## Prerequisites
 
