@@ -153,4 +153,4 @@ pipenv run python headless_run.py mario.nes --frames 120 --out full.log --hits s
 
 ## Contributions
 
-Contributions are welcome! Feel free to throw up a PR if you know of any changes that could help!
+Contributions are welcome! Feel free to throw up a PR if you know of any changes that could help. Include screenshots before and after if fixing a graphics issue.
