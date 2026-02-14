@@ -2,6 +2,7 @@
 """
 NES 6502 CPU Emulator — Cython accelerated.
 """
+from memory cimport Memory
 
 # ── Cycle lookup table (256 entries) ──
 cdef int CYCLE_TABLE[256]
@@ -378,36 +379,7 @@ cdef bint _is_write_iy(int instr_id):
 
 
 cdef class CPU:
-    # ── Typed attributes ──
-    cdef public object memory
-    # Registers
-    cdef public int A, X, Y, PC, S
-    # Flags
-    cdef public int C, Z, I, D, B, V, N
-    # Cycle tracking
-    cdef public int cycles, dma_cycles, total_cycles, odd_cycle
-    # Interrupt
-    cdef public object interrupt_pending
-    cdef public int interrupt_state
-    cdef public int interrupt_inhibit, pending_interrupt_inhibit
-    cdef public int interrupt_latency_remaining
-    cdef public bint interrupt_latency_armed
-    cdef public int interrupt_unmask_grace
-    # Branch
-    cdef public bint branch_pending
-    cdef public int branch_target
-    # NMI tracking
-    cdef public bint in_nmi
-    cdef public object current_interrupt_type
-    # KIL/JAM guard
-    cdef public object jam_reported_at
-    cdef public int current_instruction_pc
-
-    # Python-visible compatibility attributes
-    cdef public object kil_opcodes
-    cdef public list cycle_lookup
-    cdef public dict instructions
-    cdef public dict instruction_dispatch
+    # Attribute declarations are in cpu.pxd
 
     def __init__(self, memory):
         self.memory = memory

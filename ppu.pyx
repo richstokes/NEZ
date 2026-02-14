@@ -1,8 +1,9 @@
 # cython: boundscheck=False, wraparound=False, cdivision=True, language_level=3
 """
 NES PPU (Picture Processing Unit) Emulator — Cython accelerated.
+Drop-in replacement for ppu.py.
 """
-
+from memory cimport Memory
 cdef unsigned int[64] NES_PALETTE
 NES_PALETTE = [
     0xFF666666, 0xFF002A88, 0xFF1412A7, 0xFF3B00A4,
@@ -31,61 +32,7 @@ cdef inline int _reverse_byte(int b):
 
 
 cdef class PPU:
-    # ---- typed attributes ----
-    cdef public object memory
-    cdef public str region
-
-    # PPU registers
-    cdef public int ctrl, mask, status, oam_addr, oam_data, scroll, addr, data
-    # Internal registers
-    cdef public int v, t, x, w
-    # Rendering state
-    cdef public int scanline, cycle, frame
-    cdef public bint odd_frame
-    # Background tile fetch latches
-    cdef public int nt_byte, at_byte, bg_low_byte, bg_high_byte
-    # Background shift registers
-    cdef public int bg_shift_pattern_low, bg_shift_pattern_high
-    cdef public int bg_shift_attrib_low, bg_shift_attrib_high
-    # Background latches for next tile
-    cdef public int bg_next_tile_id, bg_next_tile_attr, bg_next_tile_lsb, bg_next_tile_msb
-    # Sprite state
-    cdef public int sprite_count
-    cdef public int sprite_eval_phase, sprite_eval_index, secondary_index
-    cdef public int sprite_fetch_cycle, eval_scanline_target
-    cdef public int pending_sprite_count
-    # Flags
-    cdef public bint sprite_zero_hit, sprite_overflow
-    cdef public bint render, rendering_enabled, use_new_sprite_pipeline
-    # PPU data buffer / bus
-    cdef public int buffer, bus
-    cdef public int BUS_DECAY_TIME
-    # Timing constants (stored as C ints)
-    cdef public int VISIBLE_SCANLINES, VISIBLE_DOTS, DOTS_PER_SCANLINE, END_DOT
-    cdef public int SCANLINES_PER_FRAME
-    # Control flag constants
-    cdef public int SPRITE_TABLE, BG_TABLE
-    cdef public int SHOW_BG_8, SHOW_SPRITE_8, SHOW_BG, SHOW_SPRITE, LONG_SPRITE
-    cdef public int SPRITE_0_HIT, V_BLANK, GENERATE_NMI
-    # Address masks
-    cdef public int COARSE_X, COARSE_Y, FINE_Y, HORIZONTAL_BITS, VERTICAL_BITS
-
-    # ---- Python-object arrays (accessed by index) ----
-    cdef public list vram, palette_ram, oam, screen
-    cdef public list nes_palette
-    cdef public list bus_decay_timer
-    cdef public list secondary_oam
-    cdef public list prep_sprite_indices, prep_sprite_x, prep_sprite_attr
-    cdef public list prep_sprite_tile, prep_sprite_row_low, prep_sprite_row_high
-    cdef public list sprite_shift_low, sprite_shift_high
-    cdef public list sprite_latch_attr, sprite_latch_x
-    cdef public list sprite_is_sprite0
-    cdef public list _sprite_pattern_buffer_low, _sprite_pattern_buffer_high
-    cdef public list pending_sprite_indices, pending_sprite_attr
-    cdef public list pending_sprite_x, pending_sprite_is_sprite0
-
-    # CPU reference (set externally)
-    cdef public object cpu
+    # Attribute declarations are in ppu.pxd
 
     def __init__(self, memory, region='NTSC'):
         self.memory = memory

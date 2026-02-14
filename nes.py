@@ -8,6 +8,12 @@ from ppu import PPU
 from apu import APU
 from memory import Memory, Cartridge
 
+try:
+    from nes_loop import run_frame_fast as _cython_run_frame_fast
+    _USE_CYTHON_LOOP = True
+except ImportError:
+    _USE_CYTHON_LOOP = False
+
 
 class NES:
     def __init__(self, fast_mode=True):
@@ -122,13 +128,13 @@ class NES:
             apu_step()
 
     def run_frame_fast(self):
-        """Run one complete frame in a tight loop with cached locals.
-        Avoids per-step method-call overhead of step() by inlining the
-        NMI check + CPU/PPU/APU dispatch into a single scope.
-        """
+        """Run one complete frame. Uses Cython C-level loop if available."""
+        if _USE_CYTHON_LOOP:
+            return _cython_run_frame_fast(self)
+
+        # Python fallback
         self.ppu.render = False
 
-        # Cache everything as locals for speed
         cpu = self.cpu
         ppu = self.ppu
         apu = self.apu
@@ -147,7 +153,6 @@ class NES:
         while not ppu.render and steps < step_limit:
             steps += 1
 
-            # Inline NMI handling
             if nmi_pending:
                 if nmi_delay > 0:
                     nmi_delay -= 1
@@ -156,29 +161,23 @@ class NES:
                     self.nmi_pending = False
                     nmi_handler()
                     nmi_pending = False
-                # Re-read in case handler changed them
                 nmi_pending = self.nmi_pending
                 nmi_delay = self.nmi_delay
 
-            # CPU step
             cc = cpu_step()
             cpu_cycles_total += cc
 
-            # PPU: 3 cycles per CPU cycle (NTSC)
             ppu_n = cc * 3
             for _ in range(ppu_n):
                 ppu_step()
             ppu_cycles_total += ppu_n
 
-            # APU: 1 cycle per CPU cycle
             for _ in range(cc):
                 apu_step()
 
-            # Re-sync NMI state (PPU may trigger NMI during its step)
             nmi_pending = self.nmi_pending
             nmi_delay = self.nmi_delay
 
-        # Write back counters
         self.cpu_cycles = cpu_cycles_total
         self.ppu_cycles = ppu_cycles_total
         self.nmi_pending = nmi_pending
