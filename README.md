@@ -2,9 +2,9 @@
 
 A Nintendo Entertainment System (NES) emulator **vibe-coded** in Python.  
 
-An experiment to see how close to a working emulator I can get, using both Warp and GitHub Copilot with various incantations of prompts and models. I'll write a bit more about this later if it gets close to working. I'm reviewing basically none of the generated code, instead I'm just giving the LLMs feedback based on my experience when running the emulator and steering it on areas I think it may need to focus on.  
+An experiment to see how close to a working emulator I can get, using both Warp and GitHub Copilot with various incantations of prompts and models. Not scientific at all, just a chance to play with the different models and get a feel for how they respond when pushed with challenging tasks.  
 
-
+I'm reviewing *none* of the generated code, instead I'm giving the LLMs feedback based on my experience when running the emulator and steering it on areas I think it may need to focus on.  
 
 ### Updates
 
